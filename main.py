@@ -742,11 +742,11 @@ class BestBuyAutomation:
             # Apply brand filters and load all data
             await self.apply_brand_filters_and_load_data()
             
-            # Scrape product details
-            products = await self.scrape_product_details()
+            # Scrape product details from all pages
+            products = await self.scrape_all_pages_products()
             
             # Save products to JSON file
-            await self.save_products_to_json(products, "laptop_products.json")
+            await self.save_products_to_json(products, "laptop_products_all_pages.json")
             
             # Take final screenshot for verification
             await self.take_screenshot("task1_laptop_search_filtered_final.png")
@@ -1000,6 +1000,188 @@ class BestBuyAutomation:
             
         except Exception as e:
             self.logger.debug(f"Error checking infinite scroll triggers: {e}")
+
+    async def slow_scroll_page(self, page_number: int) -> None:
+        """
+        Perform slow scrolling from top to bottom over 20 seconds for a single page.
+        This ensures all lazy-loaded content is properly loaded.
+        """
+        try:
+            self.logger.info(f"Starting slow scroll on page {page_number} (20 seconds)...")
+            
+            # Start from the top
+            await self.page.evaluate("window.scrollTo(0, 0)")
+            await asyncio.sleep(1)
+            
+            # Get page height
+            page_height = await self.page.evaluate("document.body.scrollHeight")
+            self.logger.info(f"Page {page_number} height: {page_height}px")
+            
+            # Calculate scroll parameters for 20 seconds
+            scroll_duration = 20  # seconds
+            scroll_steps = 40  # number of scroll steps (20 seconds / 0.5 second intervals)
+            step_delay = scroll_duration / scroll_steps  # 0.5 seconds per step
+            scroll_step_size = page_height / scroll_steps  # pixels per step
+            
+            current_position = 0
+            
+            for step in range(scroll_steps):
+                # Calculate next scroll position
+                next_position = min(current_position + scroll_step_size, page_height)
+                
+                # Smooth scroll to next position
+                await self.page.evaluate(f"""
+                    window.scrollTo({{
+                        top: {next_position},
+                        behavior: 'smooth'
+                    }});
+                """)
+                
+                current_position = next_position
+                
+                # Log progress every 5 seconds (every 10 steps)
+                if step % 10 == 0:
+                    progress = (step / scroll_steps) * 100
+                    self.logger.info(f"Page {page_number} scroll progress: {progress:.0f}% ({next_position:.0f}px)")
+                
+                # Wait between scroll steps
+                await asyncio.sleep(step_delay)
+                
+                # Check if we've reached the bottom
+                if next_position >= page_height:
+                    break
+            
+            # Ensure we're at the bottom
+            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(2)
+            
+            # Scroll back to top for consistent scraping
+            self.logger.info(f"Scrolling back to top of page {page_number}...")
+            await self.page.evaluate("window.scrollTo({ top: 0, behavior: 'smooth' })")
+            await asyncio.sleep(3)
+            
+            self.logger.info(f"Slow scroll completed for page {page_number}")
+            
+        except Exception as e:
+            self.logger.error(f"Error during slow scroll on page {page_number}: {e}")
+            # Continue anyway - don't let scroll issues stop the scraping
+            
+    async def scrape_all_pages_products(self) -> List[Dict]:
+        """
+        Scrape product details from all pages by navigating through pagination.
+        Returns a consolidated list of all products from all pages.
+        """
+        try:
+            self.logger.info("=== Starting multi-page product scraping ===")
+            
+            all_products = []
+            current_page = 1
+            max_pages = 5  # Safety limit to prevent infinite loops
+            
+            while current_page <= max_pages:
+                self.logger.info(f"Scraping page {current_page}...")
+                
+                # Wait for page to be ready
+                await asyncio.sleep(3)
+                await self.page.wait_for_load_state("domcontentloaded")
+                
+                # Perform slow scroll from top to bottom over 20 seconds
+                await self.slow_scroll_page(current_page)
+                
+                # Scrape products from current page
+                try:
+                    page_products = await self.scrape_product_details()
+                    if page_products:
+                        all_products.extend(page_products)
+                        self.logger.info(f"Page {current_page}: Found {len(page_products)} products (Total: {len(all_products)})")
+                    else:
+                        self.logger.warning(f"Page {current_page}: No products found")
+                except Exception as e:
+                    self.logger.error(f"Error scraping page {current_page}: {e}")
+                
+                # Take screenshot of current page
+                await self.take_screenshot(f"page_{current_page:02d}_products.png")
+                
+                # Look for "Next page" link
+                try:
+                    next_page_selectors = [
+                        'a[aria-label="Next page"]',
+                        'a[aria-label="next page"]',
+                        'a[aria-label="Next"]',
+                        '.pagination a:has-text("Next")',
+                        '.pagination a[aria-label*="Next"]',
+                        'a.next-page',
+                        'a[title*="Next"]'
+                    ]
+                    
+                    next_page_link = None
+                    for selector in next_page_selectors:
+                        try:
+                            next_page_link = await self.page.wait_for_selector(
+                                selector,
+                                timeout=5000,
+                                state="visible"
+                            )
+                            if next_page_link:
+                                # Check if the link is actually clickable (not disabled)
+                                is_disabled = await next_page_link.get_attribute('aria-disabled')
+                                classes = await next_page_link.get_attribute('class') or ''
+                                
+                                if is_disabled == 'true' or 'disabled' in classes.lower():
+                                    self.logger.info(f"Next page link found but disabled on page {current_page}")
+                                    next_page_link = None
+                                    continue
+                                else:
+                                    self.logger.info(f"Found next page link with selector: {selector}")
+                                    break
+                        except Exception as e:
+                            self.logger.debug(f"Next page selector {selector} failed: {e}")
+                            continue
+                    
+                    if not next_page_link:
+                        self.logger.info(f"No more pages found. Completed scraping at page {current_page}")
+                        break
+                    
+                    # Click the next page link
+                    self.logger.info(f"Navigating to page {current_page + 1}...")
+                    
+                    # Scroll to the next page link to ensure it's visible
+                    await next_page_link.scroll_into_view_if_needed()
+                    await asyncio.sleep(1)
+                    
+                    # Click the next page link
+                    await next_page_link.click()
+                    
+                    # Wait for navigation and new page to load
+                    await asyncio.sleep(5)
+                    await self.page.wait_for_load_state("domcontentloaded")
+                    
+                    # Wait for product list to be available on new page
+                    try:
+                        await self.page.wait_for_selector(
+                            'ul.plp-product-list',
+                            timeout=15000,
+                            state="visible"
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Product list not found on page {current_page + 1}: {e}")
+                        break
+                    
+                    current_page += 1
+                    
+                except Exception as e:
+                    self.logger.error(f"Error navigating to next page from page {current_page}: {e}")
+                    break
+            
+            self.logger.info("=== Multi-page scraping completed ===")
+            self.logger.info(f"Total pages scraped: {current_page}")
+            self.logger.info(f"Total products found: {len(all_products)}")
+            
+            return all_products
+            
+        except Exception as e:
+            self.logger.error(f"Error during multi-page scraping: {e}")
+            raise
 
     async def scrape_product_details(self) -> List[Dict]:
         """
