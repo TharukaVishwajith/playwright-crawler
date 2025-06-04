@@ -155,55 +155,112 @@ class BestBuyAutomation:
         try:
             self.logger.info("Checking for location permission dialog...")
             
+            # Grant geolocation permission at browser context level
+            await self.context.grant_permissions(['geolocation'])
+            self.logger.info("Granted geolocation permission at browser context level")
+            
             # Set up dialog handler for browser-level dialogs
+            dialog_occurred = False
+            
             async def dialog_handler(dialog):
+                nonlocal dialog_occurred
+                dialog_occurred = True
                 self.logger.info(f"Dialog detected: {dialog.type} - {dialog.message}")
-                if "location" in dialog.message.lower() or "allow" in dialog.message.lower():
-                    self.logger.info("Accepting location permission dialog")
-                    await dialog.accept()
-                else:
-                    self.logger.info("Dismissing non-location dialog")
-                    await dialog.dismiss()
+                try:
+                    if dialog.type in ['alert', 'confirm'] and any(keyword in dialog.message.lower() for keyword in ['location', 'allow', 'permission', 'enable']):
+                        self.logger.info("Accepting location-related dialog")
+                        await dialog.accept()
+                    else:
+                        self.logger.info("Accepting dialog")
+                        await dialog.accept()
+                except Exception as e:
+                    self.logger.error(f"Error handling dialog: {e}")
+                    try:
+                        await dialog.dismiss()
+                    except:
+                        pass
             
             # Add dialog listener
             self.page.on("dialog", dialog_handler)
             
-            # Wait a moment for any dialogs to appear
-            await asyncio.sleep(2)
+            # Wait for potential dialogs and page popups
+            await asyncio.sleep(3)
             
             # Check for common location permission selectors on the page
             location_selectors = [
+                # Common location permission buttons
                 'button:has-text("Allow")',
+                'button:has-text("Block")',
                 'button:has-text("Enable Location")',
                 'button:has-text("Share Location")',
+                'button:has-text("Not now")',
+                'button:has-text("Later")',
                 '[data-testid*="location"]',
-                '[class*="location"][class*="allow"]',
+                '[class*="location"]',
                 '.location-permission button',
                 '[aria-label*="location"]',
-                'button[class*="location"]'
+                'button[class*="location"]',
+                # Generic modal/popup close buttons
+                'button[aria-label="Close"]',
+                'button[aria-label="close"]',
+                '.modal button',
+                '.popup button',
+                '[role="dialog"] button',
+                '.notification button',
+                # Common dismiss patterns
+                'button:has-text("Dismiss")',
+                'button:has-text("Close")',
+                'button:has-text("X")',
+                '.close-button',
+                '.dismiss-button'
             ]
             
+            popup_handled = False
             for selector in location_selectors:
                 try:
-                    element = await self.page.query_selector(selector)
-                    if element:
-                        # Check if element is visible and contains location-related text
+                    elements = await self.page.query_selector_all(selector)
+                    for element in elements:
                         if await element.is_visible():
-                            text_content = await element.text_content()
-                            if text_content and any(keyword in text_content.lower() for keyword in ['allow', 'enable', 'location', 'share']):
-                                self.logger.info(f"Found location permission button: {text_content}")
+                            text_content = await element.text_content() or ""
+                            self.logger.info(f"Found potential popup element: {text_content.strip()}")
+                            
+                            # Click allow/enable buttons or dismiss buttons
+                            if any(keyword in text_content.lower() for keyword in ['allow', 'enable', 'share', 'dismiss', 'close', 'not now', 'later', 'block']):
+                                self.logger.info(f"Clicking location permission/popup button: {text_content.strip()}")
                                 await element.click()
-                                self.logger.info("Clicked location permission button")
-                                
-                                # Wait for any changes after clicking
-                                await asyncio.sleep(1)
+                                popup_handled = True
+                                # Wait for popup to disappear
+                                await asyncio.sleep(2)
                                 break
+                            # Handle X or close buttons
+                            elif text_content.strip() in ['X', '×', ''] and 'close' in selector.lower():
+                                self.logger.info(f"Clicking close button")
+                                await element.click()
+                                popup_handled = True
+                                await asyncio.sleep(2)
+                                break
+                                
+                    if popup_handled:
+                        break
+                        
                 except Exception as e:
                     self.logger.debug(f"Selector {selector} not found or not clickable: {e}")
                     continue
             
+            # Try to dismiss any remaining overlays by pressing Escape
+            if not popup_handled and not dialog_occurred:
+                self.logger.info("No popup buttons found, trying Escape key to dismiss overlays")
+                await self.page.keyboard.press('Escape')
+                await asyncio.sleep(1)
+            
             # Remove dialog listener
             self.page.remove_listener("dialog", dialog_handler)
+            
+            # Take a screenshot to see current state
+            try:
+                await self.take_screenshot("after_location_handling.png")
+            except:
+                pass
             
             self.logger.info("Location permission handling completed")
             
@@ -312,6 +369,240 @@ class BestBuyAutomation:
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
             
+    async def search_laptops_and_filter(self) -> None:
+        """
+        Perform laptop search and apply price filtering.
+        Steps:
+        1. Search for "laptop"
+        2. Wait for results to load
+        3. Set price range (500-1500)
+        4. Apply the filter
+        """
+        try:
+            self.logger.info("=== Starting laptop search and price filtering ===")
+            
+            # Debug: Take a screenshot to see current page state
+            await self.take_screenshot("before_search.png")
+            
+            # Step 1: Type "laptop" in the search input field with multiple selector options
+            self.logger.info("Step 1: Searching for 'laptop'...")
+            
+            search_selectors = [
+                'input.sugg-search-bar-input[data-testid="SearchBar-TestID"]',
+                'input[data-testid="SearchBar-TestID"]',
+                'input[placeholder*="Search"]',
+                'input[id*="search"]',
+                'input[class*="search"]',
+                'input[autocomplete-search-bar]',
+                '#autocomplete-search-bar',
+                'input.search-input',
+                '[role="searchbox"]',
+                'input[type="search"]'
+            ]
+            
+            search_input = None
+            for selector in search_selectors:
+                try:
+                    self.logger.info(f"Trying search selector: {selector}")
+                    search_input = await self.page.wait_for_selector(
+                        selector,
+                        timeout=5000,
+                        state="visible"
+                    )
+                    if search_input:
+                        self.logger.info(f"Found search input with selector: {selector}")
+                        break
+                except Exception as e:
+                    self.logger.debug(f"Search selector {selector} failed: {e}")
+                    continue
+            
+            if not search_input:
+                # Debug: Print available input elements
+                self.logger.info("Search input not found, checking all input elements...")
+                inputs = await self.page.query_selector_all('input')
+                for i, input_elem in enumerate(inputs):
+                    try:
+                        if await input_elem.is_visible():
+                            placeholder = await input_elem.get_attribute('placeholder') or ''
+                            id_attr = await input_elem.get_attribute('id') or ''
+                            class_attr = await input_elem.get_attribute('class') or ''
+                            self.logger.info(f"Input {i}: placeholder='{placeholder}', id='{id_attr}', class='{class_attr}'")
+                    except:
+                        pass
+                raise Exception("Search input field not found")
+            
+            # Clear any existing text and type "laptop"
+            await search_input.fill("laptop")
+            self.logger.info("Typed 'laptop' in search field")
+            
+            # Step 2: Click the search button with multiple selector options
+            self.logger.info("Step 2: Clicking search button...")
+            
+            button_selectors = [
+                'button#autocomplete-search-button[data-testid="SearchButton-TestID"]',
+                'button[data-testid="SearchButton-TestID"]',
+                'button[aria-label*="Search"]',
+                'button.sugg-magnifier',
+                'button[id*="search"]',
+                'button[class*="search"]',
+                '[role="button"][aria-label*="Search"]',
+                'button:has-text("Search")',
+                '.search-button'
+            ]
+            
+            search_button = None
+            for selector in button_selectors:
+                try:
+                    self.logger.info(f"Trying button selector: {selector}")
+                    search_button = await self.page.wait_for_selector(
+                        selector,
+                        timeout=5000,
+                        state="visible"
+                    )
+                    if search_button:
+                        self.logger.info(f"Found search button with selector: {selector}")
+                        break
+                except Exception as e:
+                    self.logger.debug(f"Button selector {selector} failed: {e}")
+                    continue
+            
+            if not search_button:
+                # Alternative: Press Enter on the search input
+                self.logger.info("Search button not found, trying Enter key...")
+                await search_input.press('Enter')
+            else:
+                await search_button.click()
+            
+            self.logger.info("Search submitted")
+            
+            # Step 3: Wait 15 seconds for the page to load
+            self.logger.info("Step 3: Waiting 15 seconds for search results to load...")
+            await asyncio.sleep(15)
+            
+            # Additional wait for page to be ready
+            await self.page.wait_for_load_state("domcontentloaded")
+            self.logger.info("Search results page loaded")
+            
+            # Debug: Take screenshot of search results
+            await self.take_screenshot("search_results.png")
+            
+            # Step 4: Set minimum price to 500
+            self.logger.info("Step 4: Setting minimum price to 500...")
+            
+            min_price_selectors = [
+                'input[placeholder="Min Price"]',
+                'input[placeholder*="Min"]',
+                'input[data-testid*="min"]',
+                'input[aria-label*="minimum"]',
+                '.price-filter input[type="number"]:first-child',
+                '.min-price input'
+            ]
+            
+            min_price_input = None
+            for selector in min_price_selectors:
+                try:
+                    min_price_input = await self.page.wait_for_selector(
+                        selector,
+                        timeout=5000,
+                        state="visible"
+                    )
+                    if min_price_input:
+                        self.logger.info(f"Found min price input with selector: {selector}")
+                        break
+                except Exception as e:
+                    self.logger.debug(f"Min price selector {selector} failed: {e}")
+                    continue
+            
+            if not min_price_input:
+                raise Exception("Min price input field not found")
+                
+            await min_price_input.fill("500")
+            self.logger.info("Set minimum price to 500")
+            
+            # Step 5: Set maximum price to 1500
+            self.logger.info("Step 5: Setting maximum price to 1500...")
+            
+            max_price_selectors = [
+                'input[placeholder="Max Price"]',
+                'input[placeholder*="Max"]',
+                'input[data-testid*="max"]',
+                'input[aria-label*="maximum"]',
+                '.price-filter input[type="number"]:last-child',
+                '.max-price input'
+            ]
+            
+            max_price_input = None
+            for selector in max_price_selectors:
+                try:
+                    max_price_input = await self.page.wait_for_selector(
+                        selector,
+                        timeout=5000,
+                        state="visible"
+                    )
+                    if max_price_input:
+                        self.logger.info(f"Found max price input with selector: {selector}")
+                        break
+                except Exception as e:
+                    self.logger.debug(f"Max price selector {selector} failed: {e}")
+                    continue
+            
+            if not max_price_input:
+                raise Exception("Max price input field not found")
+                
+            await max_price_input.fill("1500")
+            self.logger.info("Set maximum price to 1500")
+            
+            # Step 6: Click the "Set" button to apply price filter
+            self.logger.info("Step 6: Applying price filter...")
+            
+            set_button_selectors = [
+                'button.current-price-facet-set-button:has-text("Set")',
+                'button:has-text("Set")',
+                'button[aria-label*="Set"]',
+                '.price-filter button:has-text("Set")',
+                '.price-facet button:has-text("Set")',
+                'button.set-button'
+            ]
+            
+            set_button = None
+            for selector in set_button_selectors:
+                try:
+                    set_button = await self.page.wait_for_selector(
+                        selector,
+                        timeout=5000,
+                        state="visible"
+                    )
+                    if set_button:
+                        self.logger.info(f"Found set button with selector: {selector}")
+                        break
+                except Exception as e:
+                    self.logger.debug(f"Set button selector {selector} failed: {e}")
+                    continue
+            
+            if not set_button:
+                raise Exception("Set button not found")
+                
+            await set_button.click()
+            self.logger.info("Clicked 'Set' button to apply price filter")
+            
+            # Wait for filter to be applied
+            await asyncio.sleep(3)
+            await self.page.wait_for_load_state("domcontentloaded")
+            
+            # Final screenshot
+            await self.take_screenshot("final_filtered_results.png")
+            
+            self.logger.info("=== Laptop search and price filtering completed successfully ===")
+            
+        except Exception as e:
+            self.logger.error(f"Error during laptop search and filtering: {e}")
+            # Take screenshot for debugging
+            try:
+                await self.take_screenshot("error_state.png")
+            except:
+                pass
+            raise
+            
     async def run_task_1(self) -> dict:
         """
         Execute Task 1: Initial Setup and Navigation
@@ -326,8 +617,11 @@ class BestBuyAutomation:
             # Navigate to Best Buy
             await self.navigate_to_bestbuy()
             
+            # Perform laptop search and price filtering
+            await self.search_laptops_and_filter()
+            
             # Take screenshot for verification
-            await self.take_screenshot("task1_bestbuy_homepage.png")
+            await self.take_screenshot("task1_laptop_search_filtered.png")
             
             # Get page information
             page_info = await self.get_page_info()
