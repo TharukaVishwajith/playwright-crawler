@@ -2595,6 +2595,88 @@ class BestBuyAutomation:
             self.logger.error(f"Error during comprehensive product data scraping: {e}")
             raise
 
+    async def scrape_product_subset_concurrent(self, products_subset: List[Dict], max_concurrent_tabs: int = 4) -> List[Dict]:
+        """
+        Scrape specifications and reviews for a specific subset of products using concurrent processing.
+        This is useful for testing with a smaller number of products.
+        
+        Args:
+            products_subset: List of products to process
+            max_concurrent_tabs: Maximum number of concurrent browser tabs to use (default: 4)
+        
+        Returns:
+            List of products with their specifications and reviews included
+        """
+        try:
+            self.logger.info(f"=== Starting CONCURRENT subset scraping for {len(products_subset)} products ===")
+            self.logger.info(f"Using {max_concurrent_tabs} concurrent browser tabs for faster processing")
+            
+            # Create multiple browser pages for concurrent processing
+            pages = []
+            for i in range(max_concurrent_tabs):
+                page = await self.context.new_page()
+                page.set_default_timeout(config.DEFAULT_TIMEOUT)
+                page.set_default_navigation_timeout(config.NAVIGATION_TIMEOUT)
+                pages.append(page)
+                self.logger.info(f"Created browser tab {i+1}/{max_concurrent_tabs}")
+            
+            # Divide products into chunks for concurrent processing
+            import math
+            chunk_size = math.ceil(len(products_subset) / max_concurrent_tabs)
+            product_chunks = [products_subset[i:i + chunk_size] for i in range(0, len(products_subset), chunk_size)]
+            
+            self.logger.info(f"Divided {len(products_subset)} products into {len(product_chunks)} chunks")
+            for i, chunk in enumerate(product_chunks):
+                self.logger.info(f"  Chunk {i+1}: {len(chunk)} products")
+            
+            # Create concurrent tasks
+            tasks = []
+            for i, (page, chunk) in enumerate(zip(pages, product_chunks)):
+                if chunk:  # Only create task if chunk has products
+                    task = self.process_product_chunk(page, chunk, i+1)
+                    tasks.append(task)
+            
+            # Execute all chunks concurrently
+            self.logger.info(f"Starting concurrent processing with {len(tasks)} worker tasks...")
+            chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Combine results from all chunks
+            all_products_with_data = []
+            total_specs = 0
+            total_reviews = 0
+            
+            for i, result in enumerate(chunk_results):
+                if isinstance(result, Exception):
+                    self.logger.error(f"Chunk {i+1} failed with error: {result}")
+                    continue
+                elif isinstance(result, list):
+                    all_products_with_data.extend(result)
+                    # Count stats for this chunk
+                    chunk_reviews = sum(len(product.get('reviews', [])) for product in result)
+                    chunk_specs = sum(len(product.get('product_specs', {})) for product in result)
+                    total_reviews += chunk_reviews
+                    total_specs += chunk_specs
+                    self.logger.info(f"Chunk {i+1} completed: {len(result)} products, {chunk_specs} specs, {chunk_reviews} reviews")
+            
+            # Close all additional browser pages
+            for i, page in enumerate(pages):
+                try:
+                    await page.close()
+                    self.logger.debug(f"Closed browser tab {i+1}")
+                except Exception as e:
+                    self.logger.warning(f"Error closing tab {i+1}: {e}")
+            
+            self.logger.info("=== CONCURRENT subset scraping completed ===")
+            self.logger.info(f"Total products processed: {len(all_products_with_data)}")
+            self.logger.info(f"Total specifications scraped: {total_specs}")
+            self.logger.info(f"Total reviews scraped: {total_reviews}")
+            
+            return all_products_with_data
+            
+        except Exception as e:
+            self.logger.error(f"Error during concurrent subset scraping: {e}")
+            raise
+
 
 async def main():
     """Main entry point for the automation script."""

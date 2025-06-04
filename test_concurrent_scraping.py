@@ -18,7 +18,7 @@ import config
 
 
 async def test_concurrent_product_data_scraping():
-    """Test concurrent product data scraping (specs + reviews) on the first 6 products."""
+    """Test concurrent product data scraping (specs + reviews) on the first 20 products."""
     automation = BestBuyAutomation()
     
     try:
@@ -36,11 +36,12 @@ async def test_concurrent_product_data_scraping():
         products = await automation.load_products_from_json("laptop_products_all_pages.json")
         
         print(f"Loaded {len(products)} products from JSON file")
-        print("Testing concurrent product data scraping on first 6 products...\n")
         
-        # Test with 6 products using 3 concurrent tabs
-        test_products_subset = products[:6]
-        max_concurrent_tabs = 3
+        # Test with only 20 products using 4 concurrent tabs
+        test_products_subset = products[:20]
+        max_concurrent_tabs = 4
+        
+        print(f"Testing concurrent product data scraping on first {len(test_products_subset)} products...\n")
         
         print(f"🔧 Test configuration:")
         print(f"   Products to test: {len(test_products_subset)}")
@@ -52,10 +53,8 @@ async def test_concurrent_product_data_scraping():
         print("⏱️ Starting concurrent processing test...")
         start_time = time.time()
         
-        products_with_data = await automation.scrape_all_product_reviews_concurrent(max_concurrent_tabs)
-        
-        # Filter to only the test subset for fair comparison
-        test_results = products_with_data[:len(test_products_subset)]
+        # Create a temporary method to process only our test subset
+        products_with_data = await automation.scrape_product_subset_concurrent(test_products_subset, max_concurrent_tabs)
         
         concurrent_time = time.time() - start_time
         
@@ -63,21 +62,21 @@ async def test_concurrent_product_data_scraping():
         print()
         
         # Display results
-        total_specs = sum(len(product.get('product_specs', {})) for product in test_results)
-        total_reviews = sum(len(product.get('reviews', [])) for product in test_results)
+        total_specs = sum(len(product.get('product_specs', {})) for product in products_with_data)
+        total_reviews = sum(len(product.get('reviews', [])) for product in products_with_data)
         
         print("📊 CONCURRENT PROCESSING RESULTS:")
-        print(f"   ✅ Products processed: {len(test_results)}")
+        print(f"   ✅ Products processed: {len(products_with_data)}")
         print(f"   📋 Total specifications found: {total_specs}")
         print(f"   💬 Total reviews found: {total_reviews}")
         print(f"   ⏱️ Total time: {concurrent_time:.2f} seconds")
-        print(f"   🚀 Average time per product: {concurrent_time / len(test_results):.2f} seconds")
+        print(f"   🚀 Average time per product: {concurrent_time / len(products_with_data):.2f} seconds")
         print()
         
         # Show sample results
-        if test_results:
+        if products_with_data:
             print("📖 Sample product details:")
-            for i, product in enumerate(test_results[:3]):
+            for i, product in enumerate(products_with_data[:3]):
                 specs_count = len(product.get('product_specs', {}))
                 reviews_count = len(product.get('reviews', []))
                 print(f"   Product {i+1}: {specs_count} specs, {reviews_count} reviews")
@@ -96,9 +95,9 @@ async def test_concurrent_product_data_scraping():
                 print()
         
         # Save test results
-        test_file = config.DATA_DIR / "test_concurrent_products_with_specs_and_reviews.json"
+        test_file = config.DATA_DIR / "test_concurrent_20_products_with_specs_and_reviews.json"
         with open(test_file, 'w', encoding='utf-8') as f:
-            json.dump(test_results, f, indent=2, ensure_ascii=False)
+            json.dump(products_with_data, f, indent=2, ensure_ascii=False)
         
         print(f"✅ Test completed! Results saved to: {test_file}")
         
@@ -110,6 +109,16 @@ async def test_concurrent_product_data_scraping():
         speedup = estimated_sequential_time / concurrent_time
         print(f"   Estimated speedup: {speedup:.1f}x faster")
         print(f"   Efficiency: {(speedup / max_concurrent_tabs) * 100:.1f}%")
+        
+        # Calculate per-product timing
+        avg_time_per_product = concurrent_time / len(products_with_data)
+        estimated_total_time_for_115 = avg_time_per_product * 115
+        estimated_concurrent_time_for_115 = estimated_total_time_for_115 / max_concurrent_tabs
+        
+        print(f"\n📊 EXTRAPOLATED ESTIMATES FOR ALL 115 PRODUCTS:")
+        print(f"   Sequential time (115 products): {estimated_total_time_for_115:.1f} seconds ({estimated_total_time_for_115/60:.1f} minutes)")
+        print(f"   Concurrent time (115 products): {estimated_concurrent_time_for_115:.1f} seconds ({estimated_concurrent_time_for_115/60:.1f} minutes)")
+        print(f"   Estimated time savings: {(estimated_total_time_for_115 - estimated_concurrent_time_for_115)/60:.1f} minutes")
         
         print("\n🎯 BENEFITS OF CONCURRENT PROCESSING:")
         print("   ✅ Multiple products processed simultaneously")
