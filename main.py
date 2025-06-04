@@ -1069,12 +1069,19 @@ class BestBuyAutomation:
                         if rating_element:
                             style_attr = await rating_element.get_attribute('style')
                             if style_attr and 'width:' in style_attr:
-                                # Extract percentage from style attribute
+                                # Extract percentage from style attribute - handle both direct % and calc() formats
                                 import re
-                                match = re.search(r'width:\s*(\d+(?:\.\d+)?)%', style_attr)
-                                if match:
-                                    percentage = match.group(1)
+                                # First try to match calc(XX% + Xpx) format
+                                calc_match = re.search(r'width:\s*calc\((\d+(?:\.\d+)?)%[^)]*\)', style_attr)
+                                if calc_match:
+                                    percentage = calc_match.group(1)
                                     product_data["rating"] = f"{percentage}%"
+                                else:
+                                    # Fallback to direct percentage format
+                                    direct_match = re.search(r'width:\s*(\d+(?:\.\d+)?)%', style_attr)
+                                    if direct_match:
+                                        percentage = direct_match.group(1)
+                                        product_data["rating"] = f"{percentage}%"
                     except Exception as e:
                         self.logger.warning(f"Could not extract rating for item {i+1}: {e}")
                     
