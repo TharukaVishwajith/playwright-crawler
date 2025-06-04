@@ -1371,6 +1371,7 @@ class BestBuyAutomation:
     async def scrape_product_reviews(self, product_url: str, product_name: str) -> List[Dict]:
         """
         Navigate to a product page and scrape customer reviews.
+        Handles pagination to get reviews from all pages.
         
         Args:
             product_url: The URL of the product page
@@ -1495,9 +1496,83 @@ class BestBuyAutomation:
                 
                 return []
             
-            # Get all review items
+            # Scrape reviews from all pages (handle pagination)
+            all_reviews = []
+            page_number = 1
+            max_pages = 10  # Safety limit to prevent infinite loops
+            
+            while page_number <= max_pages:
+                self.logger.info(f"Scraping reviews from page {page_number} for: {product_name[:50]}...")
+                
+                # Get reviews from current page
+                page_reviews = await self.scrape_reviews_from_current_page()
+                
+                if page_reviews:
+                    all_reviews.extend(page_reviews)
+                    self.logger.info(f"Found {len(page_reviews)} reviews on page {page_number}")
+                else:
+                    self.logger.info(f"No reviews found on page {page_number}")
+                
+                # Check for next page button
+                next_button = await self.find_next_page_button()
+                
+                if next_button:
+                    self.logger.info(f"Found next page button, navigating to page {page_number + 1}...")
+                    
+                    # Click next page button
+                    await next_button.scroll_into_view_if_needed()
+                    await asyncio.sleep(1)
+                    await next_button.click()
+                    
+                    # Wait for new page to load
+                    await asyncio.sleep(3)
+                    await self.page.wait_for_load_state("domcontentloaded")
+                    
+                    # Wait for reviews list to be updated
+                    try:
+                        await self.page.wait_for_selector('ul.reviews-list', timeout=5000)
+                    except Exception:
+                        self.logger.warning("Reviews list not found after pagination")
+                        break
+                    
+                    page_number += 1
+                else:
+                    self.logger.info(f"No more pages found. Completed scraping at page {page_number}")
+                    break
+            
+            self.logger.info(f"Successfully scraped {len(all_reviews)} reviews from {page_number} page(s) for: {product_name[:50]}...")
+            
+            # Take screenshot of final reviews page for verification
+            if all_reviews:
+                await self.take_screenshot(f"reviews_found_{product_name[:20].replace(' ', '_')}.png")
+            
+            return all_reviews
+            
+        except Exception as e:
+            self.logger.error(f"Error scraping reviews for {product_name[:50]}...: {e}")
+            # Take screenshot for debugging
+            try:
+                await self.take_screenshot(f"error_scraping_{product_name[:20].replace(' ', '_')}.png")
+            except:
+                pass
+            return []
+
+    async def scrape_reviews_from_current_page(self) -> List[Dict]:
+        """
+        Scrape reviews from the current reviews page.
+        
+        Returns:
+            List of review dictionaries from the current page
+        """
+        try:
+            # Wait for reviews list to be available
+            reviews_list = await self.page.wait_for_selector('ul.reviews-list', timeout=5000)
+            
+            if not reviews_list:
+                return []
+            
+            # Get all review items on current page
             review_items = await reviews_list.query_selector_all('li.review-item')
-            self.logger.info(f"Found {len(review_items)} reviews for: {product_name[:50]}...")
             
             reviews = []
             
@@ -1537,22 +1612,82 @@ class BestBuyAutomation:
                     self.logger.warning(f"Error processing review {i+1}: {e}")
                     continue
             
-            self.logger.info(f"Successfully scraped {len(reviews)} reviews for: {product_name[:50]}...")
-            
-            # Take screenshot of reviews page for verification
-            if reviews:
-                await self.take_screenshot(f"reviews_found_{product_name[:20].replace(' ', '_')}.png")
-            
             return reviews
             
         except Exception as e:
-            self.logger.error(f"Error scraping reviews for {product_name[:50]}...: {e}")
-            # Take screenshot for debugging
-            try:
-                await self.take_screenshot(f"error_scraping_{product_name[:20].replace(' ', '_')}.png")
-            except:
-                pass
+            self.logger.error(f"Error scraping reviews from current page: {e}")
             return []
+
+    async def find_next_page_button(self) -> Optional[object]:
+        """
+        Find the next page button in pagination.
+        
+        Returns:
+            The next page button element if found, None otherwise
+        """
+        try:
+            # Look for next page button with various selectors
+            next_button_selectors = [
+                'li.page.next',
+                'li.page.next a',
+                'li.page.next button',
+                '.page.next',
+                '.page.next a',
+                '.page.next button',
+                'a[aria-label*="Next"]',
+                'button[aria-label*="Next"]',
+                '.pagination li.next',
+                '.pagination li.next a',
+                '.pagination .next',
+                'li[class*="page"][class*="next"]',
+                'li[class*="next"] a',
+                'li[class*="next"] button'
+            ]
+            
+            for selector in next_button_selectors:
+                try:
+                    next_button = await self.page.query_selector(selector)
+                    if next_button and await next_button.is_visible():
+                        # Check if the button is not disabled
+                        is_disabled = await next_button.get_attribute('disabled')
+                        aria_disabled = await next_button.get_attribute('aria-disabled')
+                        classes = await next_button.get_attribute('class') or ''
+                        
+                        if (is_disabled != 'true' and 
+                            aria_disabled != 'true' and 
+                            'disabled' not in classes.lower()):
+                            
+                            self.logger.debug(f"Found next page button with selector: {selector}")
+                            return next_button
+                        else:
+                            self.logger.debug(f"Next button found but disabled with selector: {selector}")
+                            
+                except Exception as e:
+                    self.logger.debug(f"Next button selector {selector} failed: {e}")
+                    continue
+            
+            # If not found with standard selectors, try text-based search
+            all_clickable = await self.page.query_selector_all('a, button, [role="button"]')
+            for element in all_clickable:
+                try:
+                    text_content = await element.text_content()
+                    if text_content and any(text in text_content.lower() for text in ['next', '>', '→']):
+                        if await element.is_visible():
+                            # Check if it's in a pagination context
+                            parent_element = await element.query_selector('..')
+                            if parent_element:
+                                parent_class = await parent_element.get_attribute('class') or ''
+                                if any(cls in parent_class.lower() for cls in ['page', 'pagination', 'next']):
+                                    self.logger.debug(f"Found next button by text search: {text_content.strip()}")
+                                    return element
+                except Exception:
+                    continue
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error finding next page button: {e}")
+            return None
 
     async def scrape_all_product_reviews(self) -> List[Dict]:
         """

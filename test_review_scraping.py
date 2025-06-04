@@ -1,6 +1,7 @@
 """
 Test Review Scraping Script
 Tests the review scraping functionality on a small subset of products.
+Now includes pagination handling for reviews.
 """
 
 import asyncio
@@ -20,7 +21,9 @@ async def test_review_scraping():
     automation = BestBuyAutomation()
     
     try:
-        print("=== Testing Review Scraping (First 3 Products) ===")
+        print("=== Testing Review Scraping with Pagination (First 3 Products) ===")
+        print("🔄 Now handles multiple pages of reviews per product")
+        print("📄 Will navigate through all review pages automatically")
         
         # Launch browser
         await automation.launch_browser()
@@ -51,7 +54,7 @@ async def test_review_scraping():
                     "reviews": []
                 }
                 
-                # Scrape reviews for this product
+                # Scrape reviews for this product (now with pagination)
                 reviews = await automation.scrape_product_reviews(
                     product.get('url', ''),
                     product.get('product_name', f'Product {i+1}')
@@ -60,13 +63,17 @@ async def test_review_scraping():
                 enhanced_product["reviews"] = reviews
                 test_products.append(enhanced_product)
                 
-                print(f"✅ Product {i+1}: Found {len(reviews)} reviews")
+                print(f"✅ Product {i+1}: Found {len(reviews)} reviews across all pages")
                 
                 # Show first review as example
                 if reviews:
                     first_review = reviews[0]
-                    print(f"   Sample review - Title: {first_review.get('title', 'N/A')[:30]}...")
-                    print(f"   Sample review - Description: {first_review.get('description', 'N/A')[:50]}...")
+                    print(f"   Sample review - Title: {first_review.get('title', 'N/A')[:40]}...")
+                    print(f"   Sample review - Description: {first_review.get('description', 'N/A')[:60]}...")
+                
+                # Show pagination info if available
+                if len(reviews) > 5:  # Likely paginated if more than 5 reviews
+                    print(f"   📄 Note: This product likely had multiple review pages")
                 
                 print()
                 
@@ -85,6 +92,17 @@ async def test_review_scraping():
         total_reviews = sum(len(product.get('reviews', [])) for product in test_products)
         print(f"✅ Total reviews found: {total_reviews}")
         
+        # Show statistics
+        if test_products:
+            max_reviews = max(len(product.get('reviews', [])) for product in test_products)
+            min_reviews = min(len(product.get('reviews', [])) for product in test_products)
+            avg_reviews = total_reviews / len(test_products)
+            
+            print(f"📊 Review statistics:")
+            print(f"   Max reviews per product: {max_reviews}")
+            print(f"   Min reviews per product: {min_reviews}")
+            print(f"   Average reviews per product: {avg_reviews:.1f}")
+        
         if test_products:
             print("\n=== Sample Output Structure ===")
             sample_product = test_products[0]
@@ -100,6 +118,6 @@ async def test_review_scraping():
 
 
 if __name__ == "__main__":
-    print("Starting review scraping test...")
+    print("Starting review scraping test with pagination support...")
     exit_code = asyncio.run(test_review_scraping())
     exit(exit_code) 
