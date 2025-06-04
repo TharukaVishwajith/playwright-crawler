@@ -1841,7 +1841,7 @@ class BestBuyAutomation:
                     continue
             
             # If not found with standard selectors, try text-based search
-            all_clickable = await self.page.query_selector_all('a, button, [role="button"]')
+            all_clickable = await self.page.query_selector_all('a, button, [role="button"], [role="link"]')
             for element in all_clickable:
                 try:
                     text_content = await element.text_content()
@@ -1863,9 +1863,661 @@ class BestBuyAutomation:
             self.logger.error(f"Error finding next page button: {e}")
             return None
 
+    async def scrape_all_product_reviews_concurrent(self, max_concurrent_tabs: int = 4) -> List[Dict]:
+        """
+        Load products from JSON file and scrape specifications and reviews for each product using concurrent processing.
+        
+        Args:
+            max_concurrent_tabs: Maximum number of concurrent browser tabs to use (default: 4)
+        
+        Returns:
+            List of products with their specifications and reviews included
+        """
+        try:
+            self.logger.info("=== Starting CONCURRENT product data scraping ===")
+            self.logger.info(f"Using {max_concurrent_tabs} concurrent browser tabs for faster processing")
+            
+            # Load existing products from JSON
+            products = await self.load_products_from_json("laptop_products_all_pages.json")
+            
+            # Create multiple browser pages for concurrent processing
+            pages = []
+            for i in range(max_concurrent_tabs):
+                page = await self.context.new_page()
+                page.set_default_timeout(config.DEFAULT_TIMEOUT)
+                page.set_default_navigation_timeout(config.NAVIGATION_TIMEOUT)
+                pages.append(page)
+                self.logger.info(f"Created browser tab {i+1}/{max_concurrent_tabs}")
+            
+            # Divide products into chunks for concurrent processing
+            import math
+            chunk_size = math.ceil(len(products) / max_concurrent_tabs)
+            product_chunks = [products[i:i + chunk_size] for i in range(0, len(products), chunk_size)]
+            
+            self.logger.info(f"Divided {len(products)} products into {len(product_chunks)} chunks")
+            for i, chunk in enumerate(product_chunks):
+                self.logger.info(f"  Chunk {i+1}: {len(chunk)} products")
+            
+            # Create concurrent tasks
+            tasks = []
+            for i, (page, chunk) in enumerate(zip(pages, product_chunks)):
+                if chunk:  # Only create task if chunk has products
+                    task = self.process_product_chunk(page, chunk, i+1)
+                    tasks.append(task)
+            
+            # Execute all chunks concurrently
+            self.logger.info(f"Starting concurrent processing with {len(tasks)} worker tasks...")
+            chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Combine results from all chunks
+            all_products_with_data = []
+            total_specs = 0
+            total_reviews = 0
+            
+            for i, result in enumerate(chunk_results):
+                if isinstance(result, Exception):
+                    self.logger.error(f"Chunk {i+1} failed with error: {result}")
+                    continue
+                elif isinstance(result, list):
+                    all_products_with_data.extend(result)
+                    # Count stats for this chunk
+                    chunk_reviews = sum(len(product.get('reviews', [])) for product in result)
+                    chunk_specs = sum(len(product.get('product_specs', {})) for product in result)
+                    total_reviews += chunk_reviews
+                    total_specs += chunk_specs
+                    self.logger.info(f"Chunk {i+1} completed: {len(result)} products, {chunk_specs} specs, {chunk_reviews} reviews")
+            
+            # Close all additional browser pages
+            for i, page in enumerate(pages):
+                try:
+                    await page.close()
+                    self.logger.debug(f"Closed browser tab {i+1}")
+                except Exception as e:
+                    self.logger.warning(f"Error closing tab {i+1}: {e}")
+            
+            self.logger.info("=== CONCURRENT product data scraping completed ===")
+            self.logger.info(f"Total products processed: {len(all_products_with_data)}")
+            self.logger.info(f"Total specifications scraped: {total_specs}")
+            self.logger.info(f"Total reviews scraped: {total_reviews}")
+            
+            return all_products_with_data
+            
+        except Exception as e:
+            self.logger.error(f"Error during concurrent product data scraping: {e}")
+            raise
+
+    async def process_product_chunk(self, page: "Page", products: List[Dict], worker_id: int) -> List[Dict]:
+        """
+        Process a chunk of products using a dedicated browser page.
+        
+        Args:
+            page: Browser page to use for this chunk
+            products: List of products to process
+            worker_id: ID of this worker for logging
+            
+        Returns:
+            List of processed products with specifications and reviews
+        """
+        try:
+            self.logger.info(f"Worker {worker_id}: Starting to process {len(products)} products")
+            
+            products_with_data = []
+            
+            for i, product in enumerate(products):
+                try:
+                    self.logger.info(f"Worker {worker_id}: Processing product {i+1}/{len(products)}: {product.get('product_name', 'Unknown')[:50]}...")
+                    
+                    # Skip products without URLs
+                    if not product.get('url'):
+                        self.logger.warning(f"Worker {worker_id}: Skipping product {i+1} - no URL available")
+                        continue
+                    
+                    # Create enhanced product data structure
+                    enhanced_product = {
+                        "product_name": product.get('product_name', ''),
+                        "product_price": product.get('price', ''),
+                        "rating": product.get('rating', ''),
+                        "number_of_reviews": product.get('number_of_reviews', ''),
+                        "product_url": product.get('url', ''),
+                        "product_specs": {},
+                        "reviews": []
+                    }
+                    
+                    # Scrape specifications and reviews for this product
+                    product_data = await self.scrape_product_reviews_with_page(
+                        page,
+                        product.get('url', ''),
+                        product.get('product_name', f'Product {i+1}'),
+                        worker_id
+                    )
+                    
+                    # Update the enhanced product with scraped data
+                    enhanced_product["product_specs"] = product_data.get("product_specs", {})
+                    enhanced_product["reviews"] = product_data.get("reviews", [])
+                    
+                    products_with_data.append(enhanced_product)
+                    
+                    # Log progress for this worker
+                    specs_count = len(enhanced_product["product_specs"])
+                    reviews_count = len(enhanced_product["reviews"])
+                    self.logger.info(f"Worker {worker_id}: ✅ Product {i+1}: {specs_count} specs, {reviews_count} reviews")
+                    
+                    # Small delay between products to be respectful to the server
+                    await asyncio.sleep(1)
+                    
+                except Exception as e:
+                    self.logger.error(f"Worker {worker_id}: Error processing product {i+1}: {e}")
+                    # Continue with next product even if one fails
+                    continue
+            
+            self.logger.info(f"Worker {worker_id}: Completed processing {len(products_with_data)} products successfully")
+            return products_with_data
+            
+        except Exception as e:
+            self.logger.error(f"Worker {worker_id}: Error processing product chunk: {e}")
+            return []
+
+    async def scrape_product_reviews_with_page(self, page: "Page", product_url: str, product_name: str, worker_id: int) -> Dict:
+        """
+        Navigate to a product page, scrape specifications and customer reviews using a specific browser page.
+        This is the concurrent version that works with a dedicated page instead of self.page.
+        
+        Args:
+            page: Specific browser page to use
+            product_url: The URL of the product page
+            product_name: Name of the product (for logging)
+            worker_id: ID of the worker for logging
+            
+        Returns:
+            Dictionary with product specs and reviews
+        """
+        try:
+            self.logger.debug(f"Worker {worker_id}: Scraping product data for: {product_name[:50]}...")
+            
+            # Navigate to product page
+            await page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)
+            
+            # Handle country selection if it appears (using the specific page)
+            await self.handle_country_selection_for_page(page, worker_id)
+            
+            # Handle location permission if it appears (using the specific page)
+            await self.handle_location_permission_for_page(page, worker_id)
+            
+            # First, extract product specifications
+            product_specs = await self.extract_product_specifications_for_page(page, product_name, worker_id)
+            
+            # Scroll down to 75% of the page to load the "See All Customer Reviews" button
+            await page.evaluate("""
+                const scrollHeight = document.body.scrollHeight;
+                const scrollTo = scrollHeight * 0.75;
+                window.scrollTo({
+                    top: scrollTo,
+                    behavior: 'smooth'
+                });
+            """)
+            
+            # Wait 5 seconds for the button to load (reduced from 10 for speed)
+            await asyncio.sleep(5)
+            
+            # Wait for network activity to settle
+            try:
+                await page.wait_for_load_state("networkidle", timeout=3000)
+            except Exception:
+                pass  # Continue if network doesn't idle quickly
+            
+            # Look for "See All Customer Reviews" button
+            review_button_selectors = [
+                'button:has-text("See All Customer Reviews")',
+                'button[aria-label*="See All Customer Reviews"]',
+                'a:has-text("See All Customer Reviews")',
+                'button.relative.border-xs:has-text("See All Customer Reviews")',
+                '[role="link"]:has-text("See All Customer Reviews")',
+                'button[class*="relative"][class*="border"]:has-text("See All Customer Reviews")',
+                '[class*="Op9coqeII1kYHR9Q"]:has-text("See All Customer Reviews")',
+                'button:text("See All Customer Reviews")',
+                'a:text("See All Customer Reviews")'
+            ]
+            
+            review_button = None
+            for selector in review_button_selectors:
+                try:
+                    review_button = await page.wait_for_selector(
+                        selector,
+                        timeout=3000,
+                        state="visible"
+                    )
+                    if review_button:
+                        break
+                except Exception as e:
+                    self.logger.debug(f"Review button selector {selector} failed: {e}")
+                    continue
+            
+            # If button not found, try searching for it in the entire page
+            if not review_button:
+                all_buttons = await page.query_selector_all('button, a, [role="button"], [role="link"]')
+                for button in all_buttons:
+                    try:
+                        text_content = await button.text_content()
+                        if text_content and "See All Customer Reviews" in text_content:
+                            if await button.is_visible():
+                                review_button = button
+                                break
+                    except Exception:
+                        continue
+            
+            if not review_button:
+                self.logger.warning(f"Worker {worker_id}: Reviews button not found for product: {product_name[:50]}...")
+                # Return with specs but no reviews
+                return {
+                    "product_specs": product_specs,
+                    "reviews": []
+                }
+            
+            # Click the reviews button
+            await review_button.scroll_into_view_if_needed()
+            await asyncio.sleep(1)
+            await review_button.click()
+            
+            # Wait for reviews page to load
+            await asyncio.sleep(3)
+            await page.wait_for_load_state("domcontentloaded")
+            
+            # Wait for reviews list to be available
+            try:
+                await page.wait_for_selector('ul.reviews-list', timeout=8000, state="visible")
+            except Exception:
+                self.logger.warning(f"Worker {worker_id}: Reviews list not found for product: {product_name[:50]}...")
+                return {
+                    "product_specs": product_specs,
+                    "reviews": []
+                }
+            
+            # Scrape reviews from all pages (handle pagination)
+            all_reviews = []
+            page_number = 1
+            max_pages = 10  # Safety limit
+            
+            while page_number <= max_pages:
+                # Get reviews from current page
+                page_reviews = await self.scrape_reviews_from_current_page_for_page(page, worker_id)
+                
+                if page_reviews:
+                    all_reviews.extend(page_reviews)
+                else:
+                    break
+                
+                # Check for next page button
+                next_button = await self.find_next_page_button_for_page(page, worker_id)
+                
+                if next_button:
+                    await next_button.scroll_into_view_if_needed()
+                    await asyncio.sleep(0.5)
+                    await next_button.click()
+                    await asyncio.sleep(2)
+                    await page.wait_for_load_state("domcontentloaded")
+                    
+                    try:
+                        await page.wait_for_selector('ul.reviews-list', timeout=3000)
+                    except Exception:
+                        break
+                    
+                    page_number += 1
+                else:
+                    break
+            
+            self.logger.debug(f"Worker {worker_id}: Scraped {len(all_reviews)} reviews from {page_number} page(s)")
+            
+            # Return combined data
+            return {
+                "product_specs": product_specs,
+                "reviews": all_reviews
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Worker {worker_id}: Error scraping product data: {e}")
+            return {
+                "product_specs": {},
+                "reviews": []
+            }
+
+    async def run_review_scraping_task(self, use_concurrent: bool = True, max_concurrent_tabs: int = 4) -> dict:
+        """
+        Execute the comprehensive product data scraping task (specifications and reviews) for all products.
+        
+        Args:
+            use_concurrent: Whether to use concurrent processing (default: True)
+            max_concurrent_tabs: Maximum number of concurrent browser tabs (default: 4)
+            
+        Returns:
+            Summary information dictionary
+        """
+        try:
+            mode = "CONCURRENT" if use_concurrent else "SEQUENTIAL"
+            self.logger.info(f"=== Starting Product Data Scraping Task ({mode}) ===")
+            
+            # Launch browser
+            await self.launch_browser()
+            
+            # Choose processing method
+            if use_concurrent:
+                self.logger.info(f"Using concurrent processing with {max_concurrent_tabs} browser tabs")
+                products_with_data = await self.scrape_all_product_reviews_concurrent(max_concurrent_tabs)
+            else:
+                self.logger.info("Using sequential processing")
+                products_with_data = await self.scrape_all_product_reviews()
+            
+            # Save enhanced products with specifications and reviews to JSON file
+            await self.save_products_to_json(products_with_data, "laptop_products_with_specs_and_reviews.json")
+            
+            # Take final screenshot
+            await self.take_screenshot("product_data_scraping_completed.png")
+            
+            # Calculate summary statistics
+            total_products = len(products_with_data)
+            total_reviews = sum(len(product.get('reviews', [])) for product in products_with_data)
+            total_specs = sum(len(product.get('product_specs', {})) for product in products_with_data)
+            products_with_reviews_count = sum(1 for product in products_with_data if len(product.get('reviews', [])) > 0)
+            products_with_specs_count = sum(1 for product in products_with_data if len(product.get('product_specs', {})) > 0)
+            
+            summary = {
+                "task": "product_data_scraping",
+                "processing_mode": mode.lower(),
+                "concurrent_tabs_used": max_concurrent_tabs if use_concurrent else 1,
+                "total_products_processed": total_products,
+                "products_with_specs": products_with_specs_count,
+                "products_with_reviews": products_with_reviews_count,
+                "total_specifications_scraped": total_specs,
+                "total_reviews_scraped": total_reviews,
+                "average_specs_per_product": round(total_specs / max(total_products, 1), 2),
+                "average_reviews_per_product": round(total_reviews / max(total_products, 1), 2),
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            self.logger.info(f"=== Product Data Scraping Task ({mode}) completed successfully ===")
+            self.logger.info(f"Summary: {summary}")
+            
+            return summary
+            
+        except Exception as e:
+            self.logger.error(f"Product data scraping task failed: {e}")
+            raise
+        finally:
+            await self.cleanup()
+
+    async def handle_country_selection_for_page(self, page: "Page", worker_id: int) -> None:
+        """
+        Handle the country selection screen if it appears for a specific page.
+        """
+        try:
+            # Check if the country selection screen is present
+            country_selection_header = await page.query_selector('h1:has-text("Choose a country.")')
+            
+            if country_selection_header:
+                self.logger.info(f"Worker {worker_id}: Country selection screen detected")
+                
+                # Look for the United States option
+                us_option = await page.query_selector('h4:has-text("United States")')
+                
+                if us_option:
+                    self.logger.info(f"Worker {worker_id}: Clicking on United States option...")
+                    await us_option.click()
+                    await page.wait_for_load_state("domcontentloaded", timeout=config.NAVIGATION_TIMEOUT)
+                    await asyncio.sleep(2)
+                else:
+                    self.logger.warning(f"Worker {worker_id}: United States option not found")
+            
+        except Exception as e:
+            self.logger.error(f"Worker {worker_id}: Error handling country selection: {e}")
+
+    async def handle_location_permission_for_page(self, page: "Page", worker_id: int) -> None:
+        """
+        Handle location permission alert/dialog if it appears for a specific page.
+        """
+        try:
+            # Grant geolocation permission at page level
+            await page.context.grant_permissions(['geolocation'])
+            
+            # Set up dialog handler for browser-level dialogs
+            async def dialog_handler(dialog):
+                self.logger.debug(f"Worker {worker_id}: Dialog detected: {dialog.type} - {dialog.message}")
+                try:
+                    await dialog.accept()
+                except Exception as e:
+                    self.logger.debug(f"Worker {worker_id}: Error handling dialog: {e}")
+            
+            # Add dialog listener
+            page.on("dialog", dialog_handler)
+            
+            # Wait for potential dialogs and page popups
+            await asyncio.sleep(1)
+            
+            # Check for common location permission selectors
+            location_selectors = [
+                'button:has-text("Allow")',
+                'button:has-text("Block")',
+                'button:has-text("Not now")',
+                'button:has-text("Later")',
+                'button:has-text("Dismiss")',
+                'button:has-text("Close")',
+                'button[aria-label="Close"]'
+            ]
+            
+            for selector in location_selectors:
+                try:
+                    elements = await page.query_selector_all(selector)
+                    for element in elements:
+                        if await element.is_visible():
+                            text_content = await element.text_content() or ""
+                            if any(keyword in text_content.lower() for keyword in ['allow', 'block', 'not now', 'later', 'dismiss', 'close']):
+                                await element.click()
+                                await asyncio.sleep(1)
+                                break
+                except Exception:
+                    continue
+            
+            # Try pressing Escape key to dismiss overlays
+            await page.keyboard.press('Escape')
+            await asyncio.sleep(0.5)
+            
+            # Remove dialog listener
+            page.remove_listener("dialog", dialog_handler)
+            
+        except Exception as e:
+            self.logger.debug(f"Worker {worker_id}: Error handling location permission: {e}")
+
+    async def extract_product_specifications_for_page(self, page: "Page", product_name: str, worker_id: int) -> Dict:
+        """
+        Extract product specifications by clicking the specifications button for a specific page.
+        """
+        try:
+            # Look for the specifications button using data-testid
+            specs_button_selectors = [
+                'button[data-testid="brix-button"]',
+                'button[data-testid="brix-button"]:has-text("Specifications")',
+                'button.c-button-unstyled[data-testid="brix-button"]'
+            ]
+            
+            specs_button = None
+            for selector in specs_button_selectors:
+                try:
+                    specs_button = await page.wait_for_selector(selector, timeout=3000, state="visible")
+                    if specs_button:
+                        # Check if this button contains "Specifications" text
+                        button_text = await specs_button.text_content()
+                        if button_text and "Specifications" in button_text:
+                            break
+                        else:
+                            specs_button = None
+                except Exception:
+                    continue
+            
+            if not specs_button:
+                self.logger.warning(f"Worker {worker_id}: Specifications button not found for: {product_name[:50]}...")
+                return {}
+            
+            # Click the specifications button
+            await specs_button.scroll_into_view_if_needed()
+            await asyncio.sleep(0.5)
+            await specs_button.click()
+            await asyncio.sleep(2)
+            
+            # Wait for the specifications panel content
+            try:
+                specs_panel = await page.wait_for_selector('div[data-testid="brix-sheet-content"]', timeout=5000, state="visible")
+            except Exception:
+                self.logger.warning(f"Worker {worker_id}: Specifications panel not found for: {product_name[:50]}...")
+                return {}
+            
+            # Find the specifications list
+            specs_list = await specs_panel.query_selector('ul')
+            if not specs_list:
+                return {}
+            
+            # Get all specification items
+            spec_items = await specs_list.query_selector_all('li')
+            specs = {}
+            
+            for item in spec_items:
+                try:
+                    # Find the div containing the spec name and value
+                    spec_div = await item.query_selector('div.dB7j8sHUbncyf79K')
+                    if not spec_div:
+                        # Try alternative selectors
+                        alternative_selectors = [
+                            'div[class*="inline-flex"][class*="w-full"]',
+                            'div.inline-flex.w-full',
+                            'div:has(div.grow)'
+                        ]
+                        for alt_selector in alternative_selectors:
+                            spec_div = await item.query_selector(alt_selector)
+                            if spec_div:
+                                break
+                    
+                    if spec_div:
+                        # Get the two divs containing spec name and value
+                        spec_divs = await spec_div.query_selector_all('div.grow')
+                        
+                        if len(spec_divs) >= 2:
+                            spec_name = await spec_divs[0].text_content()
+                            spec_value = await spec_divs[1].text_content()
+                            
+                            if spec_name and spec_value:
+                                clean_name = spec_name.strip().lower().replace(' ', '_').replace('-', '_')
+                                clean_value = spec_value.strip()
+                                specs[clean_name] = clean_value
+                                
+                except Exception:
+                    continue
+            
+            # Close the specifications panel
+            try:
+                await page.keyboard.press('Escape')
+                await asyncio.sleep(1)
+            except Exception:
+                pass
+            
+            self.logger.debug(f"Worker {worker_id}: Extracted {len(specs)} specifications")
+            return specs
+            
+        except Exception as e:
+            self.logger.error(f"Worker {worker_id}: Error extracting specifications: {e}")
+            return {}
+
+    async def scrape_reviews_from_current_page_for_page(self, page: "Page", worker_id: int) -> List[Dict]:
+        """
+        Scrape reviews from the current reviews page for a specific page.
+        """
+        try:
+            # Wait for reviews list to be available
+            reviews_list = await page.wait_for_selector('ul.reviews-list', timeout=3000)
+            
+            if not reviews_list:
+                return []
+            
+            # Get all review items on current page
+            review_items = await reviews_list.query_selector_all('li.review-item')
+            reviews = []
+            
+            for item in review_items:
+                try:
+                    review_data = {"title": "", "description": ""}
+                    
+                    # Extract review title
+                    try:
+                        title_element = await item.query_selector('h4.review-title')
+                        if title_element:
+                            title_text = await title_element.text_content()
+                            if title_text:
+                                review_data["title"] = title_text.strip()
+                    except Exception:
+                        pass
+                    
+                    # Extract review description
+                    try:
+                        description_element = await item.query_selector('p.pre-white-space')
+                        if description_element:
+                            description_text = await description_element.text_content()
+                            if description_text:
+                                review_data["description"] = description_text.strip()
+                    except Exception:
+                        pass
+                    
+                    # Add review if we have at least title or description
+                    if review_data["title"] or review_data["description"]:
+                        reviews.append(review_data)
+                    
+                except Exception:
+                    continue
+            
+            return reviews
+            
+        except Exception:
+            return []
+
+    async def find_next_page_button_for_page(self, page: "Page", worker_id: int) -> Optional[object]:
+        """
+        Find the next page button in pagination for a specific page.
+        """
+        try:
+            # Look for next page button with various selectors
+            next_button_selectors = [
+                'li.page.next',
+                'li.page.next a',
+                'li.page.next button',
+                '.page.next',
+                '.page.next a',
+                '.page.next button',
+                'a[aria-label*="Next"]',
+                'button[aria-label*="Next"]'
+            ]
+            
+            for selector in next_button_selectors:
+                try:
+                    next_button = await page.query_selector(selector)
+                    if next_button and await next_button.is_visible():
+                        # Check if the button is not disabled
+                        is_disabled = await next_button.get_attribute('disabled')
+                        aria_disabled = await next_button.get_attribute('aria-disabled')
+                        classes = await next_button.get_attribute('class') or ''
+                        
+                        if (is_disabled != 'true' and 
+                            aria_disabled != 'true' and 
+                            'disabled' not in classes.lower()):
+                            return next_button
+                            
+                except Exception:
+                    continue
+            
+            return None
+            
+        except Exception:
+            return None
+
     async def scrape_all_product_reviews(self) -> List[Dict]:
         """
         Load products from JSON file and scrape specifications and reviews for each product.
+        This is the original sequential version - kept for backwards compatibility.
         
         Returns:
             List of products with their specifications and reviews included
@@ -1943,56 +2595,6 @@ class BestBuyAutomation:
             self.logger.error(f"Error during comprehensive product data scraping: {e}")
             raise
 
-    async def run_review_scraping_task(self) -> dict:
-        """
-        Execute the comprehensive product data scraping task (specifications and reviews) for all products.
-        Returns summary information.
-        """
-        try:
-            self.logger.info("=== Starting Product Data Scraping Task (Specs + Reviews) ===")
-            
-            # Launch browser
-            await self.launch_browser()
-            
-            # Scrape specifications and reviews for all products
-            products_with_data = await self.scrape_all_product_reviews()
-            
-            # Save enhanced products with specifications and reviews to JSON file
-            await self.save_products_to_json(products_with_data, "laptop_products_with_specs_and_reviews.json")
-            
-            # Take final screenshot
-            await self.take_screenshot("product_data_scraping_completed.png")
-            
-            # Calculate summary statistics
-            total_products = len(products_with_data)
-            total_reviews = sum(len(product.get('reviews', [])) for product in products_with_data)
-            total_specs = sum(len(product.get('product_specs', {})) for product in products_with_data)
-            products_with_reviews_count = sum(1 for product in products_with_data if len(product.get('reviews', [])) > 0)
-            products_with_specs_count = sum(1 for product in products_with_data if len(product.get('product_specs', {})) > 0)
-            
-            summary = {
-                "task": "product_data_scraping",
-                "total_products_processed": total_products,
-                "products_with_specs": products_with_specs_count,
-                "products_with_reviews": products_with_reviews_count,
-                "total_specifications_scraped": total_specs,
-                "total_reviews_scraped": total_reviews,
-                "average_specs_per_product": round(total_specs / max(total_products, 1), 2),
-                "average_reviews_per_product": round(total_reviews / max(total_products, 1), 2),
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-            
-            self.logger.info("=== Product Data Scraping Task completed successfully ===")
-            self.logger.info(f"Summary: {summary}")
-            
-            return summary
-            
-        except Exception as e:
-            self.logger.error(f"Product data scraping task failed: {e}")
-            raise
-        finally:
-            await self.cleanup()
-
 
 async def main():
     """Main entry point for the automation script."""
@@ -2002,8 +2604,32 @@ async def main():
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "reviews":
         try:
-            result = await automation.run_review_scraping_task()
+            # Parse additional arguments for concurrent processing
+            use_concurrent = True
+            max_concurrent_tabs = 4
+            
+            # Check for --sequential flag
+            if "--sequential" in sys.argv:
+                use_concurrent = False
+                print("🔄 Using SEQUENTIAL processing mode")
+            else:
+                print("🚀 Using CONCURRENT processing mode (default)")
+            
+            # Check for --tabs argument
+            if "--tabs" in sys.argv:
+                try:
+                    tabs_index = sys.argv.index("--tabs") + 1
+                    if tabs_index < len(sys.argv):
+                        max_concurrent_tabs = int(sys.argv[tabs_index])
+                        print(f"🔧 Using {max_concurrent_tabs} concurrent tabs")
+                except (ValueError, IndexError):
+                    print("⚠️ Invalid --tabs argument, using default: 4")
+                    max_concurrent_tabs = 4
+            
+            result = await automation.run_review_scraping_task(use_concurrent, max_concurrent_tabs)
             print(f"Product data scraping task completed successfully!")
+            print(f"Processing mode: {result.get('processing_mode', 'N/A').upper()}")
+            print(f"Concurrent tabs used: {result.get('concurrent_tabs_used', 'N/A')}")
             print(f"Total products processed: {result.get('total_products_processed', 'N/A')}")
             print(f"Products with specifications: {result.get('products_with_specs', 'N/A')}")
             print(f"Products with reviews: {result.get('products_with_reviews', 'N/A')}")
