@@ -18,6 +18,18 @@ BROWSER_CONFIG = {
     "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
+# Lazy loading configuration
+LAZY_LOADING_CONFIG = {
+    "scroll_step": 300,  # pixels to scroll each time
+    "scroll_delay": 1,  # seconds to wait between scrolls
+    "max_scroll_attempts": 50,  # maximum number of scroll attempts
+    "max_stagnant_attempts": 5,  # maximum number of attempts when no new content is loaded
+    "stability_check_count": 3,  # number of times height must be stable to consider content loaded
+    "loading_indicator_timeout": 10,  # seconds to wait for loading indicators
+    "network_idle_timeout": 5000,  # milliseconds to wait for network idle
+    "final_wait_time": 2  # seconds to wait after reaching bottom
+}
+
 # URLs
 BASE_URL = "https://www.bestbuy.com"
 LAPTOPS_URL = f"{BASE_URL}/site/shop/laptop-computers"

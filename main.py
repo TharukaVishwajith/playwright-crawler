@@ -90,7 +90,9 @@ class BestBuyAutomation:
             )
             
             # Implement robust wait strategy for dynamic elements
-            await self.wait_for_page_ready()
+            # await self.wait_for_page_ready()
+
+            await asyncio.sleep(5)
             
             # Handle country selection if it appears
             await self.handle_country_selection()
@@ -476,8 +478,8 @@ class BestBuyAutomation:
             self.logger.info("Search submitted")
             
             # Step 3: Wait 15 seconds for the page to load
-            self.logger.info("Step 3: Waiting 15 seconds for search results to load...")
-            await asyncio.sleep(15)
+            self.logger.info("Step 3: Waiting 5 seconds for search results to load...")
+            await asyncio.sleep(5)
             
             # Additional wait for page to be ready
             await self.page.wait_for_load_state("domcontentloaded")
@@ -603,6 +605,99 @@ class BestBuyAutomation:
                 pass
             raise
             
+    async def apply_brand_filters_and_load_data(self) -> None:
+        """
+        Apply brand filters and perform lazy loading.
+        Steps:
+        1. Check first 3 brand checkboxes
+        2. Wait for filters to be applied
+        3. Scroll down to load all data (lazy loading)
+        """
+        try:
+            self.logger.info("=== Starting brand filter application and data loading ===")
+            
+            # Step 1: Find and check the first 3 brand checkboxes
+            self.logger.info("Step 1: Checking first 3 brand filter checkboxes...")
+            
+            # Wait for the brand facet section to be available
+            brand_section = await self.page.wait_for_selector(
+                'section.facet[data-facet="brand_facet"]',
+                timeout=10000,
+                state="visible"
+            )
+            self.logger.info("Found brand facet section")
+            
+            # Find all checkboxes within the brand facet section
+            brand_checkboxes = await brand_section.query_selector_all('input[type="checkbox"]')
+            self.logger.info(f"Found {len(brand_checkboxes)} brand checkboxes")
+            
+            # Check the first 3 checkboxes
+            checkboxes_to_check = min(3, len(brand_checkboxes))
+            for i in range(checkboxes_to_check):
+                checkbox = brand_checkboxes[i]
+                
+                # Check if the checkbox is already checked
+                is_checked = await checkbox.is_checked()
+                if not is_checked:
+                    # Get the brand name for logging
+                    try:
+                        # Look for associated label text
+                        checkbox_id = await checkbox.get_attribute('id')
+                        if checkbox_id:
+                            label = await self.page.query_selector(f'label[for="{checkbox_id}"]')
+                            if label:
+                                brand_name = await label.text_content()
+                                self.logger.info(f"Checking brand filter {i+1}: {brand_name.strip()}")
+                            else:
+                                self.logger.info(f"Checking brand filter {i+1}")
+                        else:
+                            self.logger.info(f"Checking brand filter {i+1}")
+                    except:
+                        self.logger.info(f"Checking brand filter {i+1}")
+                    
+                    # Click the checkbox
+                    await checkbox.click()
+                    
+                    # Small delay between clicks
+                    await asyncio.sleep(0.5)
+                else:
+                    self.logger.info(f"Brand filter {i+1} is already checked")
+            
+            self.logger.info(f"Successfully checked {checkboxes_to_check} brand filters")
+            
+            # Step 2: Wait for filters to be applied
+            self.logger.info("Step 2: Waiting for brand filters to be applied...")
+            
+            # Wait for page to process the filter changes
+            await asyncio.sleep(3)
+            
+            # Wait for network activity to settle
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=10000)
+                self.logger.info("Network activity settled after brand filter application")
+            except Exception as e:
+                self.logger.warning(f"Network idle timeout after brand filters: {e}")
+            
+            # Take screenshot after brand filters applied
+            await self.take_screenshot("after_brand_filters.png")
+            
+            # Step 3: Enhanced slow scrolling for lazy loading
+            await self.slow_scroll_to_load_all_content()
+            
+            # Take final screenshot showing all loaded content
+            await self.take_screenshot("final_with_brand_filters_and_data.png")
+            
+            self.logger.info("=== Brand filter application and data loading completed successfully ===")
+            
+        except Exception as e:
+            self.logger.error(f"Error during brand filter application and data loading: {e}")
+            # Take screenshot for debugging
+            try:
+                await self.take_screenshot("brand_filter_error_state.png")
+            except:
+                pass
+            raise
+            
     async def run_task_1(self) -> dict:
         """
         Execute Task 1: Initial Setup and Navigation
@@ -620,6 +715,9 @@ class BestBuyAutomation:
             # Perform laptop search and price filtering
             await self.search_laptops_and_filter()
             
+            # Apply brand filters and load all data
+            await self.apply_brand_filters_and_load_data()
+            
             # Take screenshot for verification
             await self.take_screenshot("task1_laptop_search_filtered.png")
             
@@ -634,6 +732,243 @@ class BestBuyAutomation:
             raise
         finally:
             await self.cleanup()
+
+    async def slow_scroll_to_load_all_content(self) -> None:
+        """
+        Enhanced slow scrolling to handle lazy-loaded content.
+        Uses progressive scrolling with multiple detection methods to ensure all content loads.
+        """
+        try:
+            self.logger.info("Step 3: Starting enhanced slow scrolling for lazy loading...")
+            
+            # Get initial state
+            initial_height = await self.page.evaluate("document.body.scrollHeight")
+            self.logger.info(f"Initial page height: {initial_height}px")
+            
+            # Initialize tracking variables using config values
+            scroll_position = 0
+            scroll_step = config.LAZY_LOADING_CONFIG["scroll_step"]
+            max_scroll_attempts = config.LAZY_LOADING_CONFIG["max_scroll_attempts"]
+            stagnant_attempts = 0
+            max_stagnant_attempts = config.LAZY_LOADING_CONFIG["max_stagnant_attempts"]
+            pagination_found = False
+            content_stabilized = False
+            
+            # Track content metrics for stability detection
+            previous_height = initial_height
+            height_stable_count = 0
+            required_stable_count = config.LAZY_LOADING_CONFIG["stability_check_count"]
+            
+            while stagnant_attempts < max_stagnant_attempts and not content_stabilized:
+                # Check for pagination container (main end-of-content indicator)
+                try:
+                    pagination_selectors = [
+                        'div.pagination-container',
+                        '.pagination',
+                        '[data-testid*="pagination"]',
+                        '.paging-content',
+                        '.page-numbers'
+                    ]
+                    
+                    for selector in pagination_selectors:
+                        pagination_element = await self.page.query_selector(selector)
+                        if pagination_element and await pagination_element.is_visible():
+                            self.logger.info(f"Pagination container found with selector: {selector}")
+                            pagination_found = True
+                            break
+                    
+                    if pagination_found:
+                        break
+                        
+                except Exception as e:
+                    self.logger.debug(f"Error checking pagination: {e}")
+                
+                # Check for loading indicators before scrolling
+                await self.wait_for_loading_indicators()
+                
+                # Perform gradual scroll
+                current_height = await self.page.evaluate("document.body.scrollHeight")
+                
+                if scroll_position < current_height:
+                    # Calculate next scroll position
+                    scroll_position = min(scroll_position + scroll_step, current_height)
+                    
+                    self.logger.info(f"Scrolling to position: {scroll_position}px (page height: {current_height}px)")
+                    
+                    # Smooth scroll to position
+                    await self.page.evaluate(f"""
+                        window.scrollTo({{
+                            top: {scroll_position},
+                            behavior: 'smooth'
+                        }});
+                    """)
+                    
+                    # Wait for scroll to complete and content to potentially load
+                    await asyncio.sleep(config.LAZY_LOADING_CONFIG["scroll_delay"])
+                    
+                    # Wait for any loading indicators that might appear
+                    await self.wait_for_loading_indicators()
+                    
+                    # Additional wait for network activity
+                    try:
+                        await self.page.wait_for_load_state("networkidle", timeout=config.LAZY_LOADING_CONFIG["network_idle_timeout"])
+                    except Exception:
+                        pass  # Continue if network doesn't idle quickly
+                    
+                else:
+                    # Reached bottom, check if height changed
+                    new_height = await self.page.evaluate("document.body.scrollHeight")
+                    
+                    if new_height > previous_height:
+                        self.logger.info(f"New content loaded! Height: {previous_height}px → {new_height}px")
+                        previous_height = new_height
+                        height_stable_count = 0
+                        stagnant_attempts = 0  # Reset stagnant counter
+                        
+                        # Continue scrolling with new content
+                        continue
+                    else:
+                        height_stable_count += 1
+                        self.logger.info(f"Height stable ({height_stable_count}/{required_stable_count}): {new_height}px")
+                        
+                        if height_stable_count >= required_stable_count:
+                            content_stabilized = True
+                            self.logger.info("Content has stabilized - no new content loading")
+                            break
+                        
+                        stagnant_attempts += 1
+                        
+                        # Try scrolling to absolute bottom and wait longer
+                        await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        await asyncio.sleep(config.LAZY_LOADING_CONFIG["final_wait_time"])
+                        
+                        # Check for infinite scroll triggers
+                        await self.check_for_infinite_scroll_triggers()
+            
+            # Final status report
+            final_height = await self.page.evaluate("document.body.scrollHeight")
+            self.logger.info(f"Lazy loading completed:")
+            self.logger.info(f"  - Initial height: {initial_height}px")
+            self.logger.info(f"  - Final height: {final_height}px")
+            self.logger.info(f"  - Height increase: {final_height - initial_height}px")
+            self.logger.info(f"  - Pagination found: {pagination_found}")
+            self.logger.info(f"  - Content stabilized: {content_stabilized}")
+            
+            # Position page for optimal visibility
+            if pagination_found:
+                # Scroll to show pagination
+                await self.page.evaluate("""
+                    const pagination = document.querySelector('div.pagination-container, .pagination, [data-testid*="pagination"]');
+                    if (pagination) {
+                        pagination.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                """)
+                await asyncio.sleep(2)
+                await self.take_screenshot("pagination_container_found.png")
+            
+            # Scroll back to top for final screenshot
+            await self.page.evaluate("window.scrollTo({ top: 0, behavior: 'smooth' })")
+            await asyncio.sleep(2)
+
+            # Additional 10-second wait to ensure all data is loaded
+            self.logger.info("Waiting 10 seconds to ensure all data is fully loaded...")
+            await asyncio.sleep(10)
+            self.logger.info("10-second wait completed")
+            await self.take_screenshot("page_01_after_lazy_loading.png")
+            
+        except Exception as e:
+            self.logger.error(f"Error during slow scroll lazy loading: {e}")
+            raise
+
+    async def wait_for_loading_indicators(self) -> None:
+        """
+        Wait for any visible loading indicators to disappear.
+        """
+        try:
+            loading_selectors = [
+                '[class*="loading"]',
+                '[class*="spinner"]',
+                '[class*="loader"]',
+                '[data-testid*="loading"]',
+                '.loading-overlay',
+                '.spinner-container',
+                '[aria-live="polite"]',  # Often used for loading announcements
+                '.skeleton-loader',
+                '.lazy-loading'
+            ]
+            
+            max_wait_time = config.LAZY_LOADING_CONFIG["loading_indicator_timeout"]
+            check_interval = 0.5
+            elapsed_time = 0
+            
+            while elapsed_time < max_wait_time:
+                visible_loaders = []
+                
+                for selector in loading_selectors:
+                    try:
+                        elements = await self.page.query_selector_all(selector)
+                        for element in elements:
+                            if await element.is_visible():
+                                visible_loaders.append(selector)
+                                break
+                    except Exception:
+                        continue
+                
+                if not visible_loaders:
+                    break
+                
+                self.logger.info(f"Waiting for loading indicators: {visible_loaders}")
+                await asyncio.sleep(check_interval)
+                elapsed_time += check_interval
+            
+            if elapsed_time >= max_wait_time:
+                self.logger.warning("Timeout waiting for loading indicators to disappear")
+            
+        except Exception as e:
+            self.logger.debug(f"Error checking loading indicators: {e}")
+
+    async def check_for_infinite_scroll_triggers(self) -> None:
+        """
+        Check for and trigger infinite scroll mechanisms.
+        """
+        try:
+            # Look for "Load More" buttons
+            load_more_selectors = [
+                'button:has-text("Load More")',
+                'button:has-text("Show More")',
+                'button:has-text("View More")',
+                '[data-testid*="load-more"]',
+                '[class*="load-more"]',
+                '.show-more-button',
+                '.load-more-products'
+            ]
+            
+            for selector in load_more_selectors:
+                try:
+                    button = await self.page.query_selector(selector)
+                    if button and await button.is_visible():
+                        self.logger.info(f"Found load more button: {selector}")
+                        await button.click()
+                        await asyncio.sleep(2)
+                        return
+                except Exception:
+                    continue
+            
+            # Trigger scroll events that might activate lazy loading
+            await self.page.evaluate("""
+                // Dispatch scroll events to trigger lazy loading
+                window.dispatchEvent(new Event('scroll'));
+                window.dispatchEvent(new Event('resize'));
+                
+                // Try to find and trigger intersection observers
+                const sentinels = document.querySelectorAll('[class*="sentinel"], [class*="trigger"], [data-scroll-trigger]');
+                sentinels.forEach(sentinel => {
+                    sentinel.scrollIntoView({ block: 'center' });
+                });
+            """)
+            
+        except Exception as e:
+            self.logger.debug(f"Error checking infinite scroll triggers: {e}")
 
 
 async def main():
