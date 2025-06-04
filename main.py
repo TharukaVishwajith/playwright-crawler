@@ -610,8 +610,9 @@ class BestBuyAutomation:
         Apply brand filters and perform lazy loading.
         Steps:
         1. Check first 3 brand checkboxes
-        2. Wait for filters to be applied
-        3. Scroll down to load all data (lazy loading)
+        2. Check customer rating checkbox (4 & Up)
+        3. Wait for filters to be applied
+        4. Scroll down to load all data (lazy loading)
         """
         try:
             self.logger.info("=== Starting brand filter application and data loading ===")
@@ -664,9 +665,31 @@ class BestBuyAutomation:
                     self.logger.info(f"Brand filter {i+1} is already checked")
             
             self.logger.info(f"Successfully checked {checkboxes_to_check} brand filters")
+
+            # Step 2: Check customer rating checkbox (4 & Up)
+            self.logger.info("Step 2: Checking customer rating filter (4 & Up)...")
             
-            # Step 2: Wait for filters to be applied
-            self.logger.info("Step 2: Waiting for brand filters to be applied...")
+            # Wait for the rating checkbox to be available
+            rating_checkbox = await self.page.wait_for_selector(
+                'input[type="checkbox"][id="customer-rating-4_&_Up"]',
+                timeout=10000,
+                state="visible"
+            )
+            
+            if rating_checkbox:
+                # Check if the checkbox is already checked
+                is_checked = await rating_checkbox.is_checked()
+                if not is_checked:
+                    self.logger.info("Checking customer rating filter (4 & Up)")
+                    await rating_checkbox.click()
+                    await asyncio.sleep(0.5)
+                else:
+                    self.logger.info("Customer rating filter is already checked")
+            else:
+                self.logger.warning("Customer rating checkbox not found")
+            
+            # Step 3: Wait for filters to be applied
+            self.logger.info("Step 3: Waiting for filters to be applied...")
             
             # Wait for page to process the filter changes
             await asyncio.sleep(3)
@@ -674,26 +697,26 @@ class BestBuyAutomation:
             # Wait for network activity to settle
             try:
                 await self.page.wait_for_load_state("networkidle", timeout=10000)
-                self.logger.info("Network activity settled after brand filter application")
+                self.logger.info("Network activity settled after filter application")
             except Exception as e:
-                self.logger.warning(f"Network idle timeout after brand filters: {e}")
+                self.logger.warning(f"Network idle timeout after filters: {e}")
             
-            # Take screenshot after brand filters applied
-            await self.take_screenshot("after_brand_filters.png")
+            # Take screenshot after filters applied
+            await self.take_screenshot("after_filters.png")
             
-            # Step 3: Enhanced slow scrolling for lazy loading
+            # Step 4: Enhanced slow scrolling for lazy loading
             await self.slow_scroll_to_load_all_content()
             
             # Take final screenshot showing all loaded content
-            await self.take_screenshot("final_with_brand_filters_and_data.png")
+            await self.take_screenshot("final_with_filters_and_data.png")
             
-            self.logger.info("=== Brand filter application and data loading completed successfully ===")
+            self.logger.info("=== Filter application and data loading completed successfully ===")
             
         except Exception as e:
-            self.logger.error(f"Error during brand filter application and data loading: {e}")
+            self.logger.error(f"Error during filter application and data loading: {e}")
             # Take screenshot for debugging
             try:
-                await self.take_screenshot("brand_filter_error_state.png")
+                await self.take_screenshot("filter_error_state.png")
             except:
                 pass
             raise
