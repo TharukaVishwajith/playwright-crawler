@@ -1386,18 +1386,50 @@ class BestBuyAutomation:
             await self.page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)
             
-            # Look for "See All Customer Reviews" button
+            # Handle country selection if it appears
+            await self.handle_country_selection()
+            
+            # Handle location permission if it appears
+            await self.handle_location_permission()
+            
+            # Scroll down to 75% of the page to load the "See All Customer Reviews" button
+            self.logger.info("Scrolling down to 75% of page to load review elements...")
+            await self.page.evaluate("""
+                const scrollHeight = document.body.scrollHeight;
+                const scrollTo = scrollHeight * 0.75;
+                window.scrollTo({
+                    top: scrollTo,
+                    behavior: 'smooth'
+                });
+            """)
+            
+            # Wait 10 seconds for the button to load
+            self.logger.info("Waiting 10 seconds for review elements to load...")
+            await asyncio.sleep(10)
+            
+            # Wait for network activity to settle
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass  # Continue if network doesn't idle quickly
+            
+            # Look for "See All Customer Reviews" button with more specific selectors
             review_button_selectors = [
                 'button:has-text("See All Customer Reviews")',
                 'button[aria-label*="See All Customer Reviews"]',
                 'a:has-text("See All Customer Reviews")',
                 'button.relative.border-xs:has-text("See All Customer Reviews")',
-                '[role="link"]:has-text("See All Customer Reviews")'
+                '[role="link"]:has-text("See All Customer Reviews")',
+                'button[class*="relative"][class*="border"]:has-text("See All Customer Reviews")',
+                '[class*="Op9coqeII1kYHR9Q"]:has-text("See All Customer Reviews")',
+                'button:text("See All Customer Reviews")',
+                'a:text("See All Customer Reviews")'
             ]
             
             review_button = None
             for selector in review_button_selectors:
                 try:
+                    self.logger.debug(f"Trying review button selector: {selector}")
                     review_button = await self.page.wait_for_selector(
                         selector,
                         timeout=5000,
@@ -1410,11 +1442,38 @@ class BestBuyAutomation:
                     self.logger.debug(f"Review button selector {selector} failed: {e}")
                     continue
             
+            # If button not found, try searching for it in the entire page
+            if not review_button:
+                self.logger.info("Button not found with standard selectors, searching entire page...")
+                
+                # Get all buttons and links and check their text content
+                all_buttons = await self.page.query_selector_all('button, a, [role="button"], [role="link"]')
+                for button in all_buttons:
+                    try:
+                        text_content = await button.text_content()
+                        if text_content and "See All Customer Reviews" in text_content:
+                            if await button.is_visible():
+                                review_button = button
+                                self.logger.info(f"Found review button by text search: {text_content.strip()}")
+                                break
+                    except Exception:
+                        continue
+            
             if not review_button:
                 self.logger.warning(f"Reviews button not found for product: {product_name[:50]}...")
+                
+                # Take a screenshot for debugging
+                await self.take_screenshot(f"no_review_button_{product_name[:20].replace(' ', '_')}.png")
+                
                 return []
             
+            # Scroll the button into view and click it
+            self.logger.info("Scrolling review button into view...")
+            await review_button.scroll_into_view_if_needed()
+            await asyncio.sleep(2)
+            
             # Click the reviews button
+            self.logger.info("Clicking 'See All Customer Reviews' button...")
             await review_button.click()
             
             # Wait for reviews page to load
@@ -1430,6 +1489,10 @@ class BestBuyAutomation:
                 )
             except Exception as e:
                 self.logger.warning(f"Reviews list not found for product: {product_name[:50]}... - {e}")
+                
+                # Take screenshot for debugging
+                await self.take_screenshot(f"no_reviews_list_{product_name[:20].replace(' ', '_')}.png")
+                
                 return []
             
             # Get all review items
@@ -1475,10 +1538,20 @@ class BestBuyAutomation:
                     continue
             
             self.logger.info(f"Successfully scraped {len(reviews)} reviews for: {product_name[:50]}...")
+            
+            # Take screenshot of reviews page for verification
+            if reviews:
+                await self.take_screenshot(f"reviews_found_{product_name[:20].replace(' ', '_')}.png")
+            
             return reviews
             
         except Exception as e:
             self.logger.error(f"Error scraping reviews for {product_name[:50]}...: {e}")
+            # Take screenshot for debugging
+            try:
+                await self.take_screenshot(f"error_scraping_{product_name[:20].replace(' ', '_')}.png")
+            except:
+                pass
             return []
 
     async def scrape_all_product_reviews(self) -> List[Dict]:
