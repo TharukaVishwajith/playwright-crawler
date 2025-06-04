@@ -6,8 +6,9 @@ Task 1: Initial Setup and Navigation
 import asyncio
 import logging
 import time
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError, Playwright
 
@@ -741,11 +742,18 @@ class BestBuyAutomation:
             # Apply brand filters and load all data
             await self.apply_brand_filters_and_load_data()
             
-            # Take screenshot for verification
-            await self.take_screenshot("task1_laptop_search_filtered.png")
+            # Scrape product details
+            products = await self.scrape_product_details()
+            
+            # Save products to JSON file
+            await self.save_products_to_json(products, "laptop_products.json")
+            
+            # Take final screenshot for verification
+            await self.take_screenshot("task1_laptop_search_filtered_final.png")
             
             # Get page information
             page_info = await self.get_page_info()
+            page_info["products_scraped"] = len(products)
             
             self.logger.info("=== Task 1 completed successfully ===")
             return page_info
@@ -992,6 +1000,164 @@ class BestBuyAutomation:
             
         except Exception as e:
             self.logger.debug(f"Error checking infinite scroll triggers: {e}")
+
+    async def scrape_product_details(self) -> List[Dict]:
+        """
+        Scrape product details from the search results page.
+        Returns a list of dictionaries containing product information.
+        """
+        try:
+            self.logger.info("=== Starting product details scraping ===")
+            
+            # Wait for the product list to be available
+            product_list = await self.page.wait_for_selector(
+                'ul.plp-product-list',
+                timeout=10000,
+                state="visible"
+            )
+            
+            if not product_list:
+                raise Exception("Product list not found")
+            
+            # Get all product items
+            product_items = await product_list.query_selector_all('li.product-list-item')
+            self.logger.info(f"Found {len(product_items)} product items to scrape")
+            
+            products = []
+            
+            for i, item in enumerate(product_items):
+                try:
+                    self.logger.info(f"Scraping product {i+1} of {len(product_items)}")
+                    
+                    # Initialize product data
+                    product_data = {
+                        "product_name": "",
+                        "price": "",
+                        "rating": "",
+                        "number_of_reviews": "",
+                        "url": ""
+                    }
+                    
+                    # Scrape product name from h2 title attribute
+                    try:
+                        product_title = await item.query_selector('h2.product-title')
+                        if product_title:
+                            title_attr = await product_title.get_attribute('title')
+                            if title_attr:
+                                product_data["product_name"] = title_attr.strip()
+                            else:
+                                # Fallback to text content if title attribute is missing
+                                text_content = await product_title.text_content()
+                                if text_content:
+                                    product_data["product_name"] = text_content.strip()
+                    except Exception as e:
+                        self.logger.warning(f"Could not extract product name for item {i+1}: {e}")
+                    
+                    # Scrape price from customer-price div
+                    try:
+                        price_element = await item.query_selector('div.customer-price')
+                        if price_element:
+                            price_text = await price_element.text_content()
+                            if price_text:
+                                product_data["price"] = price_text.strip()
+                    except Exception as e:
+                        self.logger.warning(f"Could not extract price for item {i+1}: {e}")
+                    
+                    # Scrape rating from c-stars-container style width
+                    try:
+                        rating_element = await item.query_selector('span.c-stars-container[style*="width:"]')
+                        if rating_element:
+                            style_attr = await rating_element.get_attribute('style')
+                            if style_attr and 'width:' in style_attr:
+                                # Extract percentage from style attribute
+                                import re
+                                match = re.search(r'width:\s*(\d+(?:\.\d+)?)%', style_attr)
+                                if match:
+                                    percentage = match.group(1)
+                                    product_data["rating"] = f"{percentage}%"
+                    except Exception as e:
+                        self.logger.warning(f"Could not extract rating for item {i+1}: {e}")
+                    
+                    # Scrape number of reviews from c-reviews span
+                    try:
+                        reviews_element = await item.query_selector('span.c-reviews')
+                        if reviews_element:
+                            reviews_text = await reviews_element.text_content()
+                            if reviews_text:
+                                # Extract number from parentheses
+                                import re
+                                match = re.search(r'\(([0-9,]+)\)', reviews_text)
+                                if match:
+                                    product_data["number_of_reviews"] = match.group(1)
+                                else:
+                                    product_data["number_of_reviews"] = reviews_text.strip()
+                    except Exception as e:
+                        self.logger.warning(f"Could not extract reviews for item {i+1}: {e}")
+                    
+                    # Scrape URL from product-image link
+                    try:
+                        url_element = await item.query_selector('div.product-image a[href]')
+                        if url_element:
+                            href = await url_element.get_attribute('href')
+                            if href:
+                                # Make absolute URL if it's relative
+                                if href.startswith('/'):
+                                    product_data["url"] = f"https://www.bestbuy.com{href}"
+                                else:
+                                    product_data["url"] = href
+                    except Exception as e:
+                        self.logger.warning(f"Could not extract URL for item {i+1}: {e}")
+                    
+                    # Add product to list if we have at least product name or URL
+                    if product_data["product_name"] or product_data["url"]:
+                        products.append(product_data)
+                        self.logger.info(f"Successfully scraped product {i+1}: {product_data['product_name'][:50]}...")
+                    else:
+                        self.logger.warning(f"Skipping product {i+1} - insufficient data")
+                
+                except Exception as e:
+                    self.logger.error(f"Error scraping product {i+1}: {e}")
+                    continue
+            
+            self.logger.info(f"Successfully scraped {len(products)} products")
+            return products
+            
+        except Exception as e:
+            self.logger.error(f"Error during product scraping: {e}")
+            raise
+
+    async def save_products_to_json(self, products: List[Dict], filename: str = "products.json") -> None:
+        """
+        Save scraped products to a JSON file.
+        """
+        try:
+            # Ensure data directory exists
+            config.DATA_DIR.mkdir(exist_ok=True)
+            
+            # Create file path
+            file_path = config.DATA_DIR / filename
+            
+            # Save to JSON file with proper formatting
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(products, f, indent=2, ensure_ascii=False)
+            
+            self.logger.info(f"Successfully saved {len(products)} products to {file_path}")
+            
+            # Log summary
+            self.logger.info("=== Product Scraping Summary ===")
+            self.logger.info(f"Total products scraped: {len(products)}")
+            self.logger.info(f"JSON file saved: {file_path}")
+            
+            # Print first few products for verification
+            if products:
+                self.logger.info("First product sample:")
+                first_product = products[0]
+                for key, value in first_product.items():
+                    self.logger.info(f"  {key}: {value}")
+            
+        except Exception as e:
+            self.logger.error(f"Error saving products to JSON: {e}")
+            raise
 
 
 async def main():
