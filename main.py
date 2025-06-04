@@ -1368,9 +1368,9 @@ class BestBuyAutomation:
             self.logger.error(f"Error loading products from JSON: {e}")
             raise
 
-    async def scrape_product_reviews(self, product_url: str, product_name: str) -> List[Dict]:
+    async def scrape_product_reviews(self, product_url: str, product_name: str) -> Dict:
         """
-        Navigate to a product page and scrape customer reviews.
+        Navigate to a product page, scrape specifications and customer reviews.
         Handles pagination to get reviews from all pages.
         
         Args:
@@ -1378,10 +1378,10 @@ class BestBuyAutomation:
             product_name: Name of the product (for logging)
             
         Returns:
-            List of review dictionaries with title and description
+            Dictionary with product specs and reviews
         """
         try:
-            self.logger.info(f"Scraping reviews for: {product_name[:50]}...")
+            self.logger.info(f"Scraping product data for: {product_name[:50]}...")
             
             # Navigate to product page
             await self.page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
@@ -1392,6 +1392,9 @@ class BestBuyAutomation:
             
             # Handle location permission if it appears
             await self.handle_location_permission()
+            
+            # First, extract product specifications
+            product_specs = await self.extract_product_specifications(product_name)
             
             # Scroll down to 75% of the page to load the "See All Customer Reviews" button
             self.logger.info("Scrolling down to 75% of page to load review elements...")
@@ -1466,7 +1469,11 @@ class BestBuyAutomation:
                 # Take a screenshot for debugging
                 await self.take_screenshot(f"no_review_button_{product_name[:20].replace(' ', '_')}.png")
                 
-                return []
+                # Return with specs but no reviews
+                return {
+                    "product_specs": product_specs,
+                    "reviews": []
+                }
             
             # Scroll the button into view and click it
             self.logger.info("Scrolling review button into view...")
@@ -1494,7 +1501,11 @@ class BestBuyAutomation:
                 # Take screenshot for debugging
                 await self.take_screenshot(f"no_reviews_list_{product_name[:20].replace(' ', '_')}.png")
                 
-                return []
+                # Return with specs but no reviews
+                return {
+                    "product_specs": product_specs,
+                    "reviews": []
+                }
             
             # Scrape reviews from all pages (handle pagination)
             all_reviews = []
@@ -1546,16 +1557,179 @@ class BestBuyAutomation:
             if all_reviews:
                 await self.take_screenshot(f"reviews_found_{product_name[:20].replace(' ', '_')}.png")
             
-            return all_reviews
+            # Return combined data
+            return {
+                "product_specs": product_specs,
+                "reviews": all_reviews
+            }
             
         except Exception as e:
-            self.logger.error(f"Error scraping reviews for {product_name[:50]}...: {e}")
+            self.logger.error(f"Error scraping product data for {product_name[:50]}...: {e}")
             # Take screenshot for debugging
             try:
                 await self.take_screenshot(f"error_scraping_{product_name[:20].replace(' ', '_')}.png")
             except:
                 pass
-            return []
+            return {
+                "product_specs": {},
+                "reviews": []
+            }
+
+    async def extract_product_specifications(self, product_name: str) -> Dict:
+        """
+        Extract product specifications by clicking the specifications button and parsing the slide panel.
+        
+        Args:
+            product_name: Name of the product (for logging)
+            
+        Returns:
+            Dictionary containing product specifications
+        """
+        try:
+            self.logger.info(f"Extracting specifications for: {product_name[:50]}...")
+            
+            # Look for the specifications button using data-testid
+            specs_button_selectors = [
+                'button[data-testid="brix-button"]',
+                'button[data-testid="brix-button"]:has-text("Specifications")',
+                'button.c-button-unstyled[data-testid="brix-button"]'
+            ]
+            
+            specs_button = None
+            for selector in specs_button_selectors:
+                try:
+                    specs_button = await self.page.wait_for_selector(
+                        selector,
+                        timeout=5000,
+                        state="visible"
+                    )
+                    if specs_button:
+                        # Check if this button contains "Specifications" text
+                        button_text = await specs_button.text_content()
+                        if button_text and "Specifications" in button_text:
+                            self.logger.info(f"Found specifications button with selector: {selector}")
+                            break
+                        else:
+                            specs_button = None
+                except Exception as e:
+                    self.logger.debug(f"Specs button selector {selector} failed: {e}")
+                    continue
+            
+            if not specs_button:
+                self.logger.warning(f"Specifications button not found for product: {product_name[:50]}...")
+                return {}
+            
+            # Click the specifications button
+            self.logger.info("Clicking specifications button...")
+            await specs_button.scroll_into_view_if_needed()
+            await asyncio.sleep(1)
+            await specs_button.click()
+            
+            # Wait for the slide panel to open
+            await asyncio.sleep(3)
+            
+            # Wait for the specifications panel content
+            try:
+                specs_panel = await self.page.wait_for_selector(
+                    'div[data-testid="brix-sheet-content"]',
+                    timeout=10000,
+                    state="visible"
+                )
+            except Exception as e:
+                self.logger.warning(f"Specifications panel not found for product: {product_name[:50]}... - {e}")
+                return {}
+            
+            # Find the specifications list
+            specs_list = await specs_panel.query_selector('ul')
+            if not specs_list:
+                self.logger.warning(f"Specifications list not found for product: {product_name[:50]}...")
+                return {}
+            
+            # Get all specification items
+            spec_items = await specs_list.query_selector_all('li')
+            self.logger.info(f"Found {len(spec_items)} specification items")
+            
+            specs = {}
+            
+            for i, item in enumerate(spec_items):
+                try:
+                    # Find the div containing the spec name and value
+                    spec_div = await item.query_selector('div.dB7j8sHUbncyf79K')
+                    if not spec_div:
+                        # Try alternative selectors for the specification container
+                        alternative_selectors = [
+                            'div[class*="inline-flex"][class*="w-full"]',
+                            'div.inline-flex.w-full',
+                            'div:has(div.grow)'
+                        ]
+                        for alt_selector in alternative_selectors:
+                            spec_div = await item.query_selector(alt_selector)
+                            if spec_div:
+                                break
+                    
+                    if spec_div:
+                        # Get the two divs containing spec name and value
+                        spec_divs = await spec_div.query_selector_all('div.grow')
+                        
+                        if len(spec_divs) >= 2:
+                            spec_name_elem = spec_divs[0]
+                            spec_value_elem = spec_divs[1]
+                            
+                            spec_name = await spec_name_elem.text_content()
+                            spec_value = await spec_value_elem.text_content()
+                            
+                            if spec_name and spec_value:
+                                # Clean and normalize the spec name for use as key
+                                clean_name = spec_name.strip().lower().replace(' ', '_').replace('-', '_')
+                                clean_value = spec_value.strip()
+                                
+                                specs[clean_name] = clean_value
+                                self.logger.debug(f"Spec {i+1}: {clean_name} = {clean_value}")
+                        else:
+                            self.logger.debug(f"Insufficient spec divs found for item {i+1}")
+                    else:
+                        self.logger.debug(f"Spec container div not found for item {i+1}")
+                        
+                except Exception as e:
+                    self.logger.warning(f"Error processing specification item {i+1}: {e}")
+                    continue
+            
+            # Close the specifications panel (click outside or find close button)
+            try:
+                # Try to find and click a close button first
+                close_selectors = [
+                    'button[aria-label="Close"]',
+                    'button[aria-label="close"]',
+                    '.close-button',
+                    '[data-testid*="close"]'
+                ]
+                
+                close_button = None
+                for selector in close_selectors:
+                    try:
+                        close_button = await self.page.query_selector(selector)
+                        if close_button and await close_button.is_visible():
+                            break
+                    except:
+                        continue
+                
+                if close_button:
+                    await close_button.click()
+                else:
+                    # Click outside the panel or press Escape
+                    await self.page.keyboard.press('Escape')
+                
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                self.logger.debug(f"Could not close specifications panel: {e}")
+            
+            self.logger.info(f"Successfully extracted {len(specs)} specifications for: {product_name[:50]}...")
+            return specs
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting specifications for {product_name[:50]}...: {e}")
+            return {}
 
     async def scrape_reviews_from_current_page(self) -> List[Dict]:
         """
@@ -1691,18 +1865,18 @@ class BestBuyAutomation:
 
     async def scrape_all_product_reviews(self) -> List[Dict]:
         """
-        Load products from JSON file and scrape reviews for each product.
+        Load products from JSON file and scrape specifications and reviews for each product.
         
         Returns:
-            List of products with their reviews included
+            List of products with their specifications and reviews included
         """
         try:
-            self.logger.info("=== Starting comprehensive review scraping ===")
+            self.logger.info("=== Starting comprehensive product data scraping ===")
             
             # Load existing products from JSON
             products = await self.load_products_from_json("laptop_products_all_pages.json")
             
-            products_with_reviews = []
+            products_with_data = []
             total_products = len(products)
             
             for i, product in enumerate(products):
@@ -1721,21 +1895,30 @@ class BestBuyAutomation:
                         "rating": product.get('rating', ''),
                         "number_of_reviews": product.get('number_of_reviews', ''),
                         "product_url": product.get('url', ''),
+                        "product_specs": {},
                         "reviews": []
                     }
                     
-                    # Scrape reviews for this product
-                    reviews = await self.scrape_product_reviews(
+                    # Scrape specifications and reviews for this product
+                    product_data = await self.scrape_product_reviews(
                         product.get('url', ''),
                         product.get('product_name', f'Product {i+1}')
                     )
                     
-                    enhanced_product["reviews"] = reviews
-                    products_with_reviews.append(enhanced_product)
+                    # Update the enhanced product with scraped data
+                    enhanced_product["product_specs"] = product_data.get("product_specs", {})
+                    enhanced_product["reviews"] = product_data.get("reviews", [])
+                    
+                    products_with_data.append(enhanced_product)
+                    
+                    # Log progress
+                    specs_count = len(enhanced_product["product_specs"])
+                    reviews_count = len(enhanced_product["reviews"])
+                    self.logger.info(f"✅ Product {i+1}: {specs_count} specs, {reviews_count} reviews")
                     
                     # Take screenshot for verification (optional, every 10th product)
                     if i % 10 == 0:
-                        await self.take_screenshot(f"review_scraping_product_{i+1:03d}.png")
+                        await self.take_screenshot(f"data_scraping_product_{i+1:03d}.png")
                     
                     # Small delay between products to be respectful
                     await asyncio.sleep(2)
@@ -1745,60 +1928,67 @@ class BestBuyAutomation:
                     # Continue with next product even if one fails
                     continue
             
-            self.logger.info("=== Review scraping completed ===")
-            self.logger.info(f"Total products processed: {len(products_with_reviews)}")
+            self.logger.info("=== Product data scraping completed ===")
+            self.logger.info(f"Total products processed: {len(products_with_data)}")
             
-            # Calculate total reviews scraped
-            total_reviews = sum(len(product.get('reviews', [])) for product in products_with_reviews)
+            # Calculate total reviews and specs scraped
+            total_reviews = sum(len(product.get('reviews', [])) for product in products_with_data)
+            total_specs = sum(len(product.get('product_specs', {})) for product in products_with_data)
+            self.logger.info(f"Total specifications scraped: {total_specs}")
             self.logger.info(f"Total reviews scraped: {total_reviews}")
             
-            return products_with_reviews
+            return products_with_data
             
         except Exception as e:
-            self.logger.error(f"Error during comprehensive review scraping: {e}")
+            self.logger.error(f"Error during comprehensive product data scraping: {e}")
             raise
 
     async def run_review_scraping_task(self) -> dict:
         """
-        Execute the review scraping task for all products.
+        Execute the comprehensive product data scraping task (specifications and reviews) for all products.
         Returns summary information.
         """
         try:
-            self.logger.info("=== Starting Review Scraping Task ===")
+            self.logger.info("=== Starting Product Data Scraping Task (Specs + Reviews) ===")
             
             # Launch browser
             await self.launch_browser()
             
-            # Scrape reviews for all products
-            products_with_reviews = await self.scrape_all_product_reviews()
+            # Scrape specifications and reviews for all products
+            products_with_data = await self.scrape_all_product_reviews()
             
-            # Save enhanced products with reviews to JSON file
-            await self.save_products_to_json(products_with_reviews, "laptop_products_with_reviews.json")
+            # Save enhanced products with specifications and reviews to JSON file
+            await self.save_products_to_json(products_with_data, "laptop_products_with_specs_and_reviews.json")
             
             # Take final screenshot
-            await self.take_screenshot("review_scraping_completed.png")
+            await self.take_screenshot("product_data_scraping_completed.png")
             
             # Calculate summary statistics
-            total_products = len(products_with_reviews)
-            total_reviews = sum(len(product.get('reviews', [])) for product in products_with_reviews)
-            products_with_reviews_count = sum(1 for product in products_with_reviews if len(product.get('reviews', [])) > 0)
+            total_products = len(products_with_data)
+            total_reviews = sum(len(product.get('reviews', [])) for product in products_with_data)
+            total_specs = sum(len(product.get('product_specs', {})) for product in products_with_data)
+            products_with_reviews_count = sum(1 for product in products_with_data if len(product.get('reviews', [])) > 0)
+            products_with_specs_count = sum(1 for product in products_with_data if len(product.get('product_specs', {})) > 0)
             
             summary = {
-                "task": "review_scraping",
+                "task": "product_data_scraping",
                 "total_products_processed": total_products,
+                "products_with_specs": products_with_specs_count,
                 "products_with_reviews": products_with_reviews_count,
+                "total_specifications_scraped": total_specs,
                 "total_reviews_scraped": total_reviews,
+                "average_specs_per_product": round(total_specs / max(total_products, 1), 2),
                 "average_reviews_per_product": round(total_reviews / max(total_products, 1), 2),
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
             }
             
-            self.logger.info("=== Review Scraping Task completed successfully ===")
+            self.logger.info("=== Product Data Scraping Task completed successfully ===")
             self.logger.info(f"Summary: {summary}")
             
             return summary
             
         except Exception as e:
-            self.logger.error(f"Review scraping task failed: {e}")
+            self.logger.error(f"Product data scraping task failed: {e}")
             raise
         finally:
             await self.cleanup()
@@ -1813,15 +2003,18 @@ async def main():
     if len(sys.argv) > 1 and sys.argv[1] == "reviews":
         try:
             result = await automation.run_review_scraping_task()
-            print(f"Review scraping task completed successfully!")
+            print(f"Product data scraping task completed successfully!")
             print(f"Total products processed: {result.get('total_products_processed', 'N/A')}")
+            print(f"Products with specifications: {result.get('products_with_specs', 'N/A')}")
             print(f"Products with reviews: {result.get('products_with_reviews', 'N/A')}")
+            print(f"Total specifications scraped: {result.get('total_specifications_scraped', 'N/A')}")
             print(f"Total reviews scraped: {result.get('total_reviews_scraped', 'N/A')}")
+            print(f"Average specs per product: {result.get('average_specs_per_product', 'N/A')}")
             print(f"Average reviews per product: {result.get('average_reviews_per_product', 'N/A')}")
             print(f"Timestamp: {result.get('timestamp', 'N/A')}")
             
         except Exception as e:
-            print(f"Review scraping task failed: {e}")
+            print(f"Product data scraping task failed: {e}")
             return 1
     else:
         # Run the original product listing scraping task

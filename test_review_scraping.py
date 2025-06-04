@@ -1,7 +1,7 @@
 """
-Test Review Scraping Script
-Tests the review scraping functionality on a small subset of products.
-Now includes pagination handling for reviews.
+Test Product Data Scraping Script
+Tests the specifications and review scraping functionality on a small subset of products.
+Now includes pagination handling for reviews and specification extraction.
 """
 
 import asyncio
@@ -16,13 +16,14 @@ from main import BestBuyAutomation
 import config
 
 
-async def test_review_scraping():
-    """Test review scraping on the first 3 products."""
+async def test_product_data_scraping():
+    """Test product data scraping (specs + reviews) on the first 3 products."""
     automation = BestBuyAutomation()
     
     try:
-        print("=== Testing Review Scraping with Pagination (First 3 Products) ===")
-        print("🔄 Now handles multiple pages of reviews per product")
+        print("=== Testing Product Data Scraping (Specs + Reviews) - First 3 Products ===")
+        print("🔧 Now extracts product specifications from the slide panel")
+        print("🔄 Handles multiple pages of reviews per product")
         print("📄 Will navigate through all review pages automatically")
         
         # Launch browser
@@ -32,7 +33,7 @@ async def test_review_scraping():
         products = await automation.load_products_from_json("laptop_products_all_pages.json")
         
         print(f"Loaded {len(products)} products from JSON file")
-        print("Testing review scraping on first 3 products...\n")
+        print("Testing product data scraping on first 3 products...\n")
         
         test_products = []
         
@@ -51,28 +52,41 @@ async def test_review_scraping():
                     "rating": product.get('rating', ''),
                     "number_of_reviews": product.get('number_of_reviews', ''),
                     "product_url": product.get('url', ''),
+                    "product_specs": {},
                     "reviews": []
                 }
                 
-                # Scrape reviews for this product (now with pagination)
-                reviews = await automation.scrape_product_reviews(
+                # Scrape specifications and reviews for this product
+                product_data = await automation.scrape_product_reviews(
                     product.get('url', ''),
                     product.get('product_name', f'Product {i+1}')
                 )
                 
-                enhanced_product["reviews"] = reviews
+                # Update the enhanced product with scraped data
+                enhanced_product["product_specs"] = product_data.get("product_specs", {})
+                enhanced_product["reviews"] = product_data.get("reviews", [])
+                
                 test_products.append(enhanced_product)
                 
-                print(f"✅ Product {i+1}: Found {len(reviews)} reviews across all pages")
+                specs_count = len(enhanced_product["product_specs"])
+                reviews_count = len(enhanced_product["reviews"])
+                print(f"✅ Product {i+1}: Found {specs_count} specifications, {reviews_count} reviews")
+                
+                # Show sample specifications
+                if enhanced_product["product_specs"]:
+                    print(f"   📋 Sample specs:")
+                    sample_specs = list(enhanced_product["product_specs"].items())[:3]
+                    for spec_name, spec_value in sample_specs:
+                        print(f"      {spec_name}: {spec_value}")
                 
                 # Show first review as example
-                if reviews:
-                    first_review = reviews[0]
-                    print(f"   Sample review - Title: {first_review.get('title', 'N/A')[:40]}...")
-                    print(f"   Sample review - Description: {first_review.get('description', 'N/A')[:60]}...")
+                if enhanced_product["reviews"]:
+                    first_review = enhanced_product["reviews"][0]
+                    print(f"   💬 Sample review - Title: {first_review.get('title', 'N/A')[:40]}...")
+                    print(f"   💬 Sample review - Description: {first_review.get('description', 'N/A')[:60]}...")
                 
                 # Show pagination info if available
-                if len(reviews) > 5:  # Likely paginated if more than 5 reviews
+                if len(enhanced_product["reviews"]) > 5:  # Likely paginated if more than 5 reviews
                     print(f"   📄 Note: This product likely had multiple review pages")
                 
                 print()
@@ -82,7 +96,7 @@ async def test_review_scraping():
                 continue
         
         # Save test results
-        test_file = config.DATA_DIR / "test_products_with_reviews.json"
+        test_file = config.DATA_DIR / "test_products_with_specs_and_reviews.json"
         with open(test_file, 'w', encoding='utf-8') as f:
             json.dump(test_products, f, indent=2, ensure_ascii=False)
         
@@ -90,6 +104,8 @@ async def test_review_scraping():
         print(f"✅ Total products tested: {len(test_products)}")
         
         total_reviews = sum(len(product.get('reviews', [])) for product in test_products)
+        total_specs = sum(len(product.get('product_specs', {})) for product in test_products)
+        print(f"✅ Total specifications found: {total_specs}")
         print(f"✅ Total reviews found: {total_reviews}")
         
         # Show statistics
@@ -98,15 +114,18 @@ async def test_review_scraping():
             min_reviews = min(len(product.get('reviews', [])) for product in test_products)
             avg_reviews = total_reviews / len(test_products)
             
-            print(f"📊 Review statistics:")
-            print(f"   Max reviews per product: {max_reviews}")
-            print(f"   Min reviews per product: {min_reviews}")
-            print(f"   Average reviews per product: {avg_reviews:.1f}")
+            max_specs = max(len(product.get('product_specs', {})) for product in test_products)
+            min_specs = min(len(product.get('product_specs', {})) for product in test_products)
+            avg_specs = total_specs / len(test_products)
+            
+            print(f"📊 Statistics:")
+            print(f"   Specifications - Max: {max_specs}, Min: {min_specs}, Avg: {avg_specs:.1f}")
+            print(f"   Reviews - Max: {max_reviews}, Min: {min_reviews}, Avg: {avg_reviews:.1f}")
         
         if test_products:
             print("\n=== Sample Output Structure ===")
             sample_product = test_products[0]
-            print(json.dumps(sample_product, indent=2)[:500] + "...")
+            print(json.dumps(sample_product, indent=2)[:800] + "...")
         
     except Exception as e:
         print(f"❌ Test failed: {e}")
@@ -118,6 +137,6 @@ async def test_review_scraping():
 
 
 if __name__ == "__main__":
-    print("Starting review scraping test with pagination support...")
-    exit_code = asyncio.run(test_review_scraping())
+    print("Starting product data scraping test (specs + reviews) with pagination support...")
+    exit_code = asyncio.run(test_product_data_scraping())
     exit(exit_code) 
