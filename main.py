@@ -92,6 +92,12 @@ class BestBuyAutomation:
             # Implement robust wait strategy for dynamic elements
             await self.wait_for_page_ready()
             
+            # Handle country selection if it appears
+            await self.handle_country_selection()
+            
+            # Handle location permission alert if it appears
+            await self.handle_location_permission()
+            
             self.logger.info("Successfully navigated to Best Buy")
             
         except PlaywrightTimeoutError:
@@ -100,6 +106,111 @@ class BestBuyAutomation:
         except Exception as e:
             self.logger.error(f"Failed to navigate to Best Buy: {e}")
             raise
+            
+    async def handle_country_selection(self) -> None:
+        """
+        Handle the country selection screen if it appears.
+        Looks for "Choose a country." H1 and clicks on "United States" H4.
+        """
+        try:
+            self.logger.info("Checking for country selection screen...")
+            
+            # Check if the country selection screen is present
+            country_selection_header = await self.page.query_selector('h1:has-text("Choose a country.")')
+            
+            if country_selection_header:
+                self.logger.info("Country selection screen detected")
+                
+                # Look for the United States option
+                us_option = await self.page.query_selector('h4:has-text("United States")')
+                
+                if us_option:
+                    self.logger.info("Clicking on United States option...")
+                    
+                    # Click on the United States option
+                    await us_option.click()
+                    
+                    # Wait for navigation after clicking
+                    await self.page.wait_for_load_state("domcontentloaded", timeout=config.NAVIGATION_TIMEOUT)
+                    
+                    # Wait for the new page to be ready
+                    await self.wait_for_page_ready()
+                    
+                    self.logger.info("Successfully selected United States and navigated to main site")
+                else:
+                    self.logger.warning("United States option not found on country selection screen")
+            else:
+                self.logger.info("No country selection screen detected, proceeding with main site")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling country selection: {e}")
+            # Don't raise the exception as this might not be critical
+            self.logger.info("Continuing despite country selection handling error...")
+            
+    async def handle_location_permission(self) -> None:
+        """
+        Handle location permission alert/dialog if it appears.
+        This can be a browser dialog or a website popup asking for location access.
+        """
+        try:
+            self.logger.info("Checking for location permission dialog...")
+            
+            # Set up dialog handler for browser-level dialogs
+            async def dialog_handler(dialog):
+                self.logger.info(f"Dialog detected: {dialog.type} - {dialog.message}")
+                if "location" in dialog.message.lower() or "allow" in dialog.message.lower():
+                    self.logger.info("Accepting location permission dialog")
+                    await dialog.accept()
+                else:
+                    self.logger.info("Dismissing non-location dialog")
+                    await dialog.dismiss()
+            
+            # Add dialog listener
+            self.page.on("dialog", dialog_handler)
+            
+            # Wait a moment for any dialogs to appear
+            await asyncio.sleep(2)
+            
+            # Check for common location permission selectors on the page
+            location_selectors = [
+                'button:has-text("Allow")',
+                'button:has-text("Enable Location")',
+                'button:has-text("Share Location")',
+                '[data-testid*="location"]',
+                '[class*="location"][class*="allow"]',
+                '.location-permission button',
+                '[aria-label*="location"]',
+                'button[class*="location"]'
+            ]
+            
+            for selector in location_selectors:
+                try:
+                    element = await self.page.query_selector(selector)
+                    if element:
+                        # Check if element is visible and contains location-related text
+                        if await element.is_visible():
+                            text_content = await element.text_content()
+                            if text_content and any(keyword in text_content.lower() for keyword in ['allow', 'enable', 'location', 'share']):
+                                self.logger.info(f"Found location permission button: {text_content}")
+                                await element.click()
+                                self.logger.info("Clicked location permission button")
+                                
+                                # Wait for any changes after clicking
+                                await asyncio.sleep(1)
+                                break
+                except Exception as e:
+                    self.logger.debug(f"Selector {selector} not found or not clickable: {e}")
+                    continue
+            
+            # Remove dialog listener
+            self.page.remove_listener("dialog", dialog_handler)
+            
+            self.logger.info("Location permission handling completed")
+            
+        except Exception as e:
+            self.logger.error(f"Error handling location permission: {e}")
+            # Don't raise the exception as this might not be critical
+            self.logger.info("Continuing despite location permission handling error...")
             
     async def wait_for_page_ready(self) -> None:
         """
