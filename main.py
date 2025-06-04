@@ -1348,21 +1348,286 @@ class BestBuyAutomation:
             self.logger.error(f"Error saving products to JSON: {e}")
             raise
 
+    async def load_products_from_json(self, filename: str = "laptop_products_all_pages.json") -> List[Dict]:
+        """
+        Load products from existing JSON file.
+        """
+        try:
+            file_path = config.DATA_DIR / filename
+            
+            if not file_path.exists():
+                raise FileNotFoundError(f"Products file not found: {file_path}")
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                products = json.load(f)
+            
+            self.logger.info(f"Successfully loaded {len(products)} products from {file_path}")
+            return products
+            
+        except Exception as e:
+            self.logger.error(f"Error loading products from JSON: {e}")
+            raise
+
+    async def scrape_product_reviews(self, product_url: str, product_name: str) -> List[Dict]:
+        """
+        Navigate to a product page and scrape customer reviews.
+        
+        Args:
+            product_url: The URL of the product page
+            product_name: Name of the product (for logging)
+            
+        Returns:
+            List of review dictionaries with title and description
+        """
+        try:
+            self.logger.info(f"Scraping reviews for: {product_name[:50]}...")
+            
+            # Navigate to product page
+            await self.page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
+            
+            # Look for "See All Customer Reviews" button
+            review_button_selectors = [
+                'button:has-text("See All Customer Reviews")',
+                'button[aria-label*="See All Customer Reviews"]',
+                'a:has-text("See All Customer Reviews")',
+                'button.relative.border-xs:has-text("See All Customer Reviews")',
+                '[role="link"]:has-text("See All Customer Reviews")'
+            ]
+            
+            review_button = None
+            for selector in review_button_selectors:
+                try:
+                    review_button = await self.page.wait_for_selector(
+                        selector,
+                        timeout=5000,
+                        state="visible"
+                    )
+                    if review_button:
+                        self.logger.info(f"Found review button with selector: {selector}")
+                        break
+                except Exception as e:
+                    self.logger.debug(f"Review button selector {selector} failed: {e}")
+                    continue
+            
+            if not review_button:
+                self.logger.warning(f"Reviews button not found for product: {product_name[:50]}...")
+                return []
+            
+            # Click the reviews button
+            await review_button.click()
+            
+            # Wait for reviews page to load
+            await asyncio.sleep(5)
+            await self.page.wait_for_load_state("domcontentloaded")
+            
+            # Wait for reviews list to be available
+            try:
+                reviews_list = await self.page.wait_for_selector(
+                    'ul.reviews-list',
+                    timeout=10000,
+                    state="visible"
+                )
+            except Exception as e:
+                self.logger.warning(f"Reviews list not found for product: {product_name[:50]}... - {e}")
+                return []
+            
+            # Get all review items
+            review_items = await reviews_list.query_selector_all('li.review-item')
+            self.logger.info(f"Found {len(review_items)} reviews for: {product_name[:50]}...")
+            
+            reviews = []
+            
+            for i, item in enumerate(review_items):
+                try:
+                    review_data = {
+                        "title": "",
+                        "description": ""
+                    }
+                    
+                    # Extract review title
+                    try:
+                        title_element = await item.query_selector('h4.review-title')
+                        if title_element:
+                            title_text = await title_element.text_content()
+                            if title_text:
+                                review_data["title"] = title_text.strip()
+                    except Exception as e:
+                        self.logger.debug(f"Could not extract title for review {i+1}: {e}")
+                    
+                    # Extract review description
+                    try:
+                        description_element = await item.query_selector('p.pre-white-space')
+                        if description_element:
+                            description_text = await description_element.text_content()
+                            if description_text:
+                                review_data["description"] = description_text.strip()
+                    except Exception as e:
+                        self.logger.debug(f"Could not extract description for review {i+1}: {e}")
+                    
+                    # Add review if we have at least title or description
+                    if review_data["title"] or review_data["description"]:
+                        reviews.append(review_data)
+                        self.logger.debug(f"Review {i+1}: {review_data['title'][:30]}...")
+                    
+                except Exception as e:
+                    self.logger.warning(f"Error processing review {i+1}: {e}")
+                    continue
+            
+            self.logger.info(f"Successfully scraped {len(reviews)} reviews for: {product_name[:50]}...")
+            return reviews
+            
+        except Exception as e:
+            self.logger.error(f"Error scraping reviews for {product_name[:50]}...: {e}")
+            return []
+
+    async def scrape_all_product_reviews(self) -> List[Dict]:
+        """
+        Load products from JSON file and scrape reviews for each product.
+        
+        Returns:
+            List of products with their reviews included
+        """
+        try:
+            self.logger.info("=== Starting comprehensive review scraping ===")
+            
+            # Load existing products from JSON
+            products = await self.load_products_from_json("laptop_products_all_pages.json")
+            
+            products_with_reviews = []
+            total_products = len(products)
+            
+            for i, product in enumerate(products):
+                try:
+                    self.logger.info(f"Processing product {i+1}/{total_products}: {product.get('product_name', 'Unknown')[:50]}...")
+                    
+                    # Skip products without URLs
+                    if not product.get('url'):
+                        self.logger.warning(f"Skipping product {i+1} - no URL available")
+                        continue
+                    
+                    # Create enhanced product data structure
+                    enhanced_product = {
+                        "product_name": product.get('product_name', ''),
+                        "product_price": product.get('price', ''),
+                        "rating": product.get('rating', ''),
+                        "number_of_reviews": product.get('number_of_reviews', ''),
+                        "product_url": product.get('url', ''),
+                        "reviews": []
+                    }
+                    
+                    # Scrape reviews for this product
+                    reviews = await self.scrape_product_reviews(
+                        product.get('url', ''),
+                        product.get('product_name', f'Product {i+1}')
+                    )
+                    
+                    enhanced_product["reviews"] = reviews
+                    products_with_reviews.append(enhanced_product)
+                    
+                    # Take screenshot for verification (optional, every 10th product)
+                    if i % 10 == 0:
+                        await self.take_screenshot(f"review_scraping_product_{i+1:03d}.png")
+                    
+                    # Small delay between products to be respectful
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing product {i+1}: {e}")
+                    # Continue with next product even if one fails
+                    continue
+            
+            self.logger.info("=== Review scraping completed ===")
+            self.logger.info(f"Total products processed: {len(products_with_reviews)}")
+            
+            # Calculate total reviews scraped
+            total_reviews = sum(len(product.get('reviews', [])) for product in products_with_reviews)
+            self.logger.info(f"Total reviews scraped: {total_reviews}")
+            
+            return products_with_reviews
+            
+        except Exception as e:
+            self.logger.error(f"Error during comprehensive review scraping: {e}")
+            raise
+
+    async def run_review_scraping_task(self) -> dict:
+        """
+        Execute the review scraping task for all products.
+        Returns summary information.
+        """
+        try:
+            self.logger.info("=== Starting Review Scraping Task ===")
+            
+            # Launch browser
+            await self.launch_browser()
+            
+            # Scrape reviews for all products
+            products_with_reviews = await self.scrape_all_product_reviews()
+            
+            # Save enhanced products with reviews to JSON file
+            await self.save_products_to_json(products_with_reviews, "laptop_products_with_reviews.json")
+            
+            # Take final screenshot
+            await self.take_screenshot("review_scraping_completed.png")
+            
+            # Calculate summary statistics
+            total_products = len(products_with_reviews)
+            total_reviews = sum(len(product.get('reviews', [])) for product in products_with_reviews)
+            products_with_reviews_count = sum(1 for product in products_with_reviews if len(product.get('reviews', [])) > 0)
+            
+            summary = {
+                "task": "review_scraping",
+                "total_products_processed": total_products,
+                "products_with_reviews": products_with_reviews_count,
+                "total_reviews_scraped": total_reviews,
+                "average_reviews_per_product": round(total_reviews / max(total_products, 1), 2),
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            self.logger.info("=== Review Scraping Task completed successfully ===")
+            self.logger.info(f"Summary: {summary}")
+            
+            return summary
+            
+        except Exception as e:
+            self.logger.error(f"Review scraping task failed: {e}")
+            raise
+        finally:
+            await self.cleanup()
+
 
 async def main():
     """Main entry point for the automation script."""
     automation = BestBuyAutomation()
     
-    try:
-        result = await automation.run_task_1()
-        print(f"Task 1 completed successfully!")
-        print(f"Page URL: {result.get('url', 'N/A')}")
-        print(f"Page Title: {result.get('title', 'N/A')}")
-        print(f"Timestamp: {result.get('timestamp', 'N/A')}")
-        
-    except Exception as e:
-        print(f"Task 1 failed: {e}")
-        return 1
+    # Check if we should run review scraping task
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "reviews":
+        try:
+            result = await automation.run_review_scraping_task()
+            print(f"Review scraping task completed successfully!")
+            print(f"Total products processed: {result.get('total_products_processed', 'N/A')}")
+            print(f"Products with reviews: {result.get('products_with_reviews', 'N/A')}")
+            print(f"Total reviews scraped: {result.get('total_reviews_scraped', 'N/A')}")
+            print(f"Average reviews per product: {result.get('average_reviews_per_product', 'N/A')}")
+            print(f"Timestamp: {result.get('timestamp', 'N/A')}")
+            
+        except Exception as e:
+            print(f"Review scraping task failed: {e}")
+            return 1
+    else:
+        # Run the original product listing scraping task
+        try:
+            result = await automation.run_task_1()
+            print(f"Task 1 completed successfully!")
+            print(f"Page URL: {result.get('url', 'N/A')}")
+            print(f"Page Title: {result.get('title', 'N/A')}")
+            print(f"Products scraped: {result.get('products_scraped', 'N/A')}")
+            print(f"Timestamp: {result.get('timestamp', 'N/A')}")
+            
+        except Exception as e:
+            print(f"Task 1 failed: {e}")
+            return 1
         
     return 0
 

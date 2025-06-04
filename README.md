@@ -1,113 +1,165 @@
-# E-Commerce Analytics Automation
+# Best Buy E-Commerce Analytics Automation
 
-An automated system to analyze product data and customer reviews from Best Buy using Python and Playwright.
+This project automates the scraping of Best Buy laptop products and their customer reviews in **two distinct phases**.
 
-## Project Overview
+## Prerequisites
 
-This project implements an automated web scraping and analytics system for e-commerce data collection from Best Buy. It uses Playwright for browser automation with robust error handling and clean code practices.
+1. Ensure you have Python 3.8+ installed
+2. Activate the virtual environment: `source .venv/bin/activate`
+3. All dependencies should already be installed in the `.venv`
 
-## Project Structure
+## 🚀 Quick Start - Run Only Review Scraping (Phase 2)
 
+If you already have the product data from Phase 1 and **only want to run the review scraping**:
+
+### Option 1: Interactive Launcher (Recommended)
+```bash
+source .venv/bin/activate
+python launcher.py
+# Then select option 2: "Phase 2: Review Scraping"
 ```
-/project
-    /data          # Scraped data and screenshots
-    /logs          # Application logs
-    /tests         # Unit tests (to be implemented)
-    /reports       # Generated reports
-    main.py        # Main automation script
-    config.py      # Configuration settings
-    requirements.txt # Python dependencies
-    README.md      # This file
+
+### Option 2: Direct Script
+```bash
+source .venv/bin/activate
+python run_review_scraping_only.py
 ```
 
-## Requirements
+### Option 3: Using Main Script
+```bash
+source .venv/bin/activate
+python main.py reviews
+```
 
-- Python 3.11
-- Chrome browser (installed automatically by Playwright)
+### Option 4: Test First (3 products only)
+```bash
+source .venv/bin/activate
+python test_review_scraping.py
+```
 
-## Installation
+## Two-Phase Automation Details
 
-1. **Clone or create the project directory:**
-   ```bash
-   mkdir ecommerce-automation
-   cd ecommerce-automation
-   ```
+### Phase 1: Product Listing Scraping
+Scrapes laptop products from Best Buy search results with filters applied.
 
-2. **Install Python dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+**Output**: `data/laptop_products_all_pages.json`
 
-3. **Install Playwright browsers:**
-   ```bash
-   playwright install chromium
-   ```
-
-## Usage
-
-### Task 1: Initial Setup and Navigation
-
-Run the basic navigation and setup:
-
+**To run Phase 1 only**:
 ```bash
 python main.py
 ```
 
-This will:
-- Launch Chrome browser in headless mode
-- Navigate to bestbuy.com
-- Implement robust wait strategies for dynamic elements
-- Take a screenshot for verification
-- Log all activities
+### Phase 2: Product Review Scraping ⭐
+Loads products from Phase 1 and scrapes customer reviews for each product.
 
-## Configuration
+**Input**: `data/laptop_products_all_pages.json`  
+**Output**: `data/laptop_products_with_reviews.json`
 
-The `config.py` file contains all configuration settings:
+**Multiple ways to run Phase 2 only**:
 
-- **Browser settings**: Headless mode, viewport size, user agent
-- **URLs**: Base URL and category-specific URLs
-- **Timeouts**: Navigation, element wait, and default timeouts
-- **Rate limiting**: Delays to avoid being blocked
-- **Logging**: Log levels and file locations
+| Method | Command | Best For |
+|--------|---------|----------|
+| **Interactive Menu** | `python launcher.py` | First-time users |
+| **Direct Script** | `python run_review_scraping_only.py` | Production use |
+| **Main Script** | `python main.py reviews` | Command line |
+| **Test Mode** | `python test_review_scraping.py` | Testing/debugging |
 
-## Features Implemented
+## Output Format
 
-### Task 1 ✅
-- [x] Launch Chrome browser in headless mode
-- [x] Navigate to bestbuy.com
-- [x] Implement robust wait strategy for dynamic elements
-- [x] Error handling and logging
-- [x] Screenshot capture for verification
+### Phase 1 Output Structure
+```json
+[
+  {
+    "product_name": "Laptop Name",
+    "price": "$999.99",
+    "rating": "90%", 
+    "number_of_reviews": "123",
+    "url": "https://www.bestbuy.com/site/..."
+  }
+]
+```
 
-### Upcoming Tasks
-- [ ] Task 2: Product Category Analysis
-- [ ] Task 3: Advanced Data Collection
+### Phase 2 Output Structure
+```json
+[
+  {
+    "product_name": "Laptop Name",
+    "product_price": "$999.99",
+    "rating": "90%",
+    "number_of_reviews": "123", 
+    "product_url": "https://www.bestbuy.com/site/...",
+    "reviews": [
+      {
+        "title": "Great laptop!",
+        "description": "Very fast and reliable for daily use..."
+      }
+    ]
+  }
+]
+```
 
-## Logging
+## 📋 Step-by-Step Guide for Review Scraping Only
 
-All activities are logged to:
-- Console output (for real-time monitoring)
-- `logs/automation.log` (for persistent logging)
+1. **Activate virtual environment**:
+   ```bash
+   source .venv/bin/activate
+   ```
 
-Log levels include INFO, WARNING, ERROR, and DEBUG messages.
+2. **Verify Phase 1 data exists**:
+   ```bash
+   ls data/laptop_products_all_pages.json
+   ```
 
-## Error Handling
+3. **Choose your preferred method**:
 
-The system includes comprehensive error handling for:
-- Browser launch failures
-- Navigation timeouts
-- Element not found scenarios
-- Network connectivity issues
-- Resource cleanup
+   **🔥 Recommended - Interactive Launcher**:
+   ```bash
+   python launcher.py
+   ```
+   
+   **⚡ Quick - Direct Script**:
+   ```bash
+   python run_review_scraping_only.py
+   ```
 
-## Screenshots
+4. **Monitor progress**:
+   - Watch console output for real-time progress
+   - Check `logs/automation.log` for detailed logs
+   - Screenshots saved in `data/` directory
 
-Screenshots are automatically saved to the `data/` directory for verification and debugging purposes.
+5. **Check results**:
+   ```bash
+   ls data/laptop_products_with_reviews.json
+   ```
 
-## Development Notes
+## Files Description
 
-- Uses async/await pattern for efficient browser automation
-- Implements proper resource cleanup
-- Follows clean code practices with type hints
-- Comprehensive logging for debugging and monitoring
-- Configurable timeouts and delays for reliability 
+| File | Purpose | When to Use |
+|------|---------|-------------|
+| `launcher.py` | Interactive menu for all options | **First time or unsure what to run** |
+| `run_review_scraping_only.py` | **Phase 2 only** with validation | **Production review scraping** |
+| `main.py` | Original script (both phases) | Phase 1 or `main.py reviews` |
+| `test_review_scraping.py` | Test on 3 products only | Testing before full run |
+| `scrape_reviews.py` | Simple Phase 2 script | Alternative to above |
+
+## ⚠️ Important Notes
+
+- **Phase 2 requires Phase 1 to be completed first**
+- Review scraping takes 20-30 minutes for ~115 products  
+- Each product page is visited individually
+- Process can be interrupted and resumed
+- All progress is logged for debugging
+
+## 🆘 Troubleshooting
+
+**"Required input file not found"**:
+- Run Phase 1 first: `python main.py`
+- Or test with: `python test_review_scraping.py`
+
+**Browser issues**:
+- Make sure virtual environment is activated
+- Check if Playwright browsers are installed in `.venv`
+
+**Slow performance**:
+- This is normal - each product page must be visited
+- Use test mode first: `python test_review_scraping.py` 
